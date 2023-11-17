@@ -1372,6 +1372,16 @@ def main():
     parser = get_parser()
     LibriSpeechAsrDataModule.add_arguments(parser)
     args = parser.parse_args()
+
+    args.world_size = 1
+    args.num_epochs = 1
+    args.start_epoch = 1
+    args.use_fp16 = True
+    args.musan_dir = Path("/mnt/host/corpus/musan/musan/fbank")
+    args.exp_dir = "zipformer/exp"
+    args.full_libri = 1
+    args.max_duration = 240
+
     args.exp_dir = Path(args.exp_dir)
 
     world_size = args.world_size

@@ -110,6 +110,9 @@ class LibriSpeechAsrDataModule:
             "single batch. You can reduce it if it causes CUDA OOM.",
         )
         group.add_argument(
+            "--musan-dir", type=Path, help="Path to directory with musan cuts. "
+        )
+        group.add_argument(
             "--bucketing-sampler",
             type=str2bool,
             default=True,
@@ -231,7 +234,7 @@ class LibriSpeechAsrDataModule:
         if self.args.enable_musan:
             logging.info("Enable MUSAN")
             logging.info("About to get Musan cuts")
-            cuts_musan = load_manifest(self.args.manifest_dir / "musan_cuts.jsonl.gz")
+            cuts_musan = load_manifest(self.args.musan_dir / "musan_cuts.jsonl.gz")
             transforms.append(
                 CutMix(cuts=cuts_musan, p=0.5, snr=(10, 20), preserve_id=True)
             )

@@ -521,7 +521,6 @@ def compute_loss(
             lm_scale=params.lm_scale,
         )
 
-        loss = qua_loss
 
         # if params.use_transducer:
         s = params.simple_loss_scale
@@ -537,7 +536,9 @@ def compute_loss(
             if batch_idx_train >= warm_step
             else 0.1 + 0.9 * (batch_idx_train / warm_step)
         )
-        loss += simple_loss_scale * simple_loss + pruned_loss_scale * pruned_loss
+
+        loss = simple_loss_scale * simple_loss + pruned_loss_scale * pruned_loss
+        loss += qua_loss
 
         if params.use_ctc:
             loss += params.ctc_loss_scale * ctc_loss
@@ -1107,6 +1108,24 @@ def main():
     LibriSpeechAsrDataModule.add_arguments(parser)
     Tokenizer.add_arguments(parser)
     args = parser.parse_args()
+
+    args.world_size = 1
+    args.exp_dir = Path("cift1/exp0_meanabs")
+    args.use_fp16 = True
+    args.max_duration = 240
+    args.lang = Path("data/lang_bpe_500")
+    args.manifest = Path("data/fbank")
+    args.full_libri = 0
+    args.prune_range = 16
+    args.pad_feature = 30
+    args.musan_dir = Path("/mnt/host/corpus/musan/musan/fbank")
+    args.context_size = 4
+    args.phi_arch = "vanilla"
+    args.phi_type = "att;8,0"
+    args.phi_norm_type = "layernorm"
+    args.alpha_actv = "abs"
+    args.omega_type = "Mean"
+
 
     world_size = args.world_size
     assert world_size >= 1

@@ -30,7 +30,7 @@
 #     ./cift1/decode_main.sh cift1/$exp_dir 40
 
 # done
-
+exp_dir=exp0_meanabs
 python -m pdb cift1/train.py \
     --world-size 1 \
     --exp-dir cift1/$exp_dir \
@@ -47,6 +47,6 @@ python -m pdb cift1/train.py \
     --context-size 4 \
     --phi-arch vanilla \
     --phi-type "att;8,0" \
-    --phi-norm biasnorm \
+    --phi-norm-type biasnorm \
     --alpha-actv abs \
-    --omega-type Mean
+    --omega-type Mean 
