@@ -201,17 +201,10 @@ def get_parser():
     )
 
     parser.add_argument(
-        "--lang-dir",
+        "--res-dir",
         type=Path,
-        default="data/lang_char",
-        help="The lang dir. It should contain at least a word table.",
-    )
-
-    parser.add_argument(
-        "--lang-dir",
-        type=Path,
-        default="data/lang_bpe_500",
-        help="The lang dir containing word table and LG graph",
+        default=None,
+        help="The result dir",
     )
 
     parser.add_argument(
@@ -475,7 +468,7 @@ def decode_one_batch(
             max_states=params.max_states,
         )
         for hyp in sp.decode(hyp_tokens):
-            hyps.append(hyp.split())
+            hyps.append(sp.text2word(hyp))
     elif params.decoding_method == "fast_beam_search_nbest_LG":
         hyp_tokens = fast_beam_search_nbest_LG(
             model=model,
@@ -503,7 +496,7 @@ def decode_one_batch(
             nbest_scale=params.nbest_scale,
         )
         for hyp in sp.decode(hyp_tokens):
-            hyps.append(hyp.split())
+            hyps.append(sp.text2word(hyp))
     elif params.decoding_method == "fast_beam_search_nbest_oracle":
         hyp_tokens = fast_beam_search_nbest_oracle(
             model=model,
@@ -518,7 +511,7 @@ def decode_one_batch(
             nbest_scale=params.nbest_scale,
         )
         for hyp in sp.decode(hyp_tokens):
-            hyps.append(hyp.split())
+            hyps.append(sp.text2word(hyp))
     elif params.decoding_method == "greedy_search" and params.max_sym_per_frame == 1:
         hyp_tokens = greedy_search_batch(
             model=model,
@@ -526,7 +519,7 @@ def decode_one_batch(
             encoder_out_lens=encoder_out_lens,
         )
         for hyp in sp.decode(hyp_tokens):
-            hyps.append(hyp.split())
+            hyps.append(sp.text2word(hyp))
     elif params.decoding_method == "modified_beam_search":
         hyp_tokens = modified_beam_search(
             model=model,
@@ -536,7 +529,7 @@ def decode_one_batch(
             context_graph=context_graph,
         )
         for hyp in sp.decode(hyp_tokens):
-            hyps.append(hyp.split())
+            hyps.append(sp.text2word(hyp))
     elif params.decoding_method == "modified_beam_search_lm_shallow_fusion":
         hyp_tokens = modified_beam_search_lm_shallow_fusion(
             model=model,
@@ -546,7 +539,7 @@ def decode_one_batch(
             LM=LM,
         )
         for hyp in sp.decode(hyp_tokens):
-            hyps.append(hyp.split())
+            hyps.append(sp.text2word(hyp))
     elif params.decoding_method == "modified_beam_search_LODR":
         hyp_tokens = modified_beam_search_LODR(
             model=model,
@@ -559,7 +552,7 @@ def decode_one_batch(
             context_graph=context_graph,
         )
         for hyp in sp.decode(hyp_tokens):
-            hyps.append(hyp.split())
+            hyps.append(sp.text2word(hyp))
     elif params.decoding_method == "modified_beam_search_lm_rescore":
         lm_scale_list = [0.01 * i for i in range(10, 50)]
         ans_dict = modified_beam_search_lm_rescore(
@@ -605,7 +598,7 @@ def decode_one_batch(
                 raise ValueError(
                     f"Unsupported decoding method: {params.decoding_method}"
                 )
-            hyps.append(sp.decode(hyp).split())
+            hyps.append(sp.text2word(sp.decode(hyp)))
 
     if params.decoding_method == "greedy_search":
         return {"greedy_search": hyps}
@@ -710,7 +703,7 @@ def decode_dataset(
             this_batch = []
             assert len(hyps) == len(texts)
             for cut_id, hyp_words, ref_text in zip(cut_ids, hyps, texts):
-                ref_words = ref_text.split()
+                ref_words = sp.text2word(ref_text)
                 this_batch.append((cut_id, ref_words, hyp_words))
 
             results[name].extend(this_batch)
@@ -794,7 +787,8 @@ def main():
         "modified_beam_search_lm_rescore",
         "modified_beam_search_lm_rescore_LODR",
     )
-    params.res_dir = params.exp_dir / params.decoding_method
+    if not params.res_dir:
+        params.res_dir = params.exp_dir / params.decoding_method
 
     if os.path.exists(params.context_file):
         params.has_contexts = True
@@ -853,7 +847,7 @@ def main():
 
     device = torch.device("cpu")
     if torch.cuda.is_available():
-        device = torch.device("cuda", 0)
+        device = torch.device("cuda", params.gpu)
 
     logging.info(f"Device: {device}")
 
@@ -1055,7 +1049,7 @@ def main():
         with (
             params.res_dir
             / (
-                f"{subdir}-{params.decode_chunk_len}_{params.beam_size}"
+                f"{subdir}-{params.chunk_size}_{params.beam_size}"
                 f"_{params.avg}_{params.epoch}.cer"
             )
         ).open("w") as fout:
