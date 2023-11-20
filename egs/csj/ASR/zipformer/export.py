@@ -163,9 +163,9 @@ import logging
 from pathlib import Path
 from typing import List, Tuple
 
-import k2
 import torch
 from scaling_converter import convert_scaled_to_non_scaled
+from tokenizer import Tokenizer
 from torch import Tensor, nn
 from train import add_model_arguments, get_model, get_params
 
@@ -232,13 +232,6 @@ def get_parser():
     )
 
     parser.add_argument(
-        "--tokens",
-        type=str,
-        default="data/lang_bpe_500/tokens.txt",
-        help="Path to the tokens.txt",
-    )
-
-    parser.add_argument(
         "--jit",
         type=str2bool,
         default=False,
@@ -256,7 +249,7 @@ def get_parser():
     )
 
     add_model_arguments(parser)
-
+    Tokenizer.add_arguments(parser)
     return parser
 
 
@@ -402,9 +395,11 @@ def main():
 
     logging.info(f"device: {device}")
 
-    token_table = k2.SymbolTable.from_file(params.tokens)
-    params.blank_id = token_table["<blk>"]
-    params.vocab_size = num_tokens(token_table) + 1
+    sp = Tokenizer.load(params.lang, params.lang_type)
+
+    # <blk> is defined in local/prepare_lang_char.py
+    params.blank_id = sp.piece_to_id("<blk>")
+    params.vocab_size = sp.get_piece_size()
 
     logging.info(params)
 
