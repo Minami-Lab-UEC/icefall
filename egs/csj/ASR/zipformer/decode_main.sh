@@ -2,7 +2,7 @@ set -eou pipefail
 
 
 exp_dir=$1
-epoch=$2
+epoch=40
 setup=$(find "$exp_dir" -maxdepth 1 -type f -name "*.txt")
 # setup="${setup#zipformer/exp3_}"
 ./zipformer/offline-decode_cmd2.sh \

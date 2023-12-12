@@ -195,6 +195,20 @@ def get_parser():
     )
 
     parser.add_argument(
+        "--res-dir",
+        type=Path,
+        default=None,
+        help="The result dir",
+    )
+    
+    parser.add_argument(
+        "--gpu",
+        type=int,
+        default=0,
+        help="The GPU to use",
+    )
+
+    parser.add_argument(
         "--bpe-model",
         type=str,
         default="data/lang_bpe_500/bpe.model",
@@ -751,6 +765,7 @@ def save_results(
         note = ""
     logging.info(s)
 
+    return test_set_wers
 
 @torch.no_grad()
 def main():
@@ -776,7 +791,8 @@ def main():
         "modified_beam_search_lm_rescore",
         "modified_beam_search_lm_rescore_LODR",
     )
-    params.res_dir = params.exp_dir / params.decoding_method
+    if not params.res_dir:
+        params.res_dir = params.exp_dir / params.decoding_method
 
     if os.path.exists(params.context_file):
         params.has_contexts = True
@@ -835,7 +851,7 @@ def main():
 
     device = torch.device("cpu")
     if torch.cuda.is_available():
-        device = torch.device("cuda", 0)
+        device = torch.device("cuda", params.gpu)
 
     logging.info(f"Device: {device}")
 
@@ -1016,14 +1032,20 @@ def main():
     args.return_cuts = True
     librispeech = LibriSpeechAsrDataModule(args)
 
+    dev_clean_cuts = librispeech.dev_clean_cuts()
+    dev_other_cuts = librispeech.dev_other_cuts()
+
     test_clean_cuts = librispeech.test_clean_cuts()
     test_other_cuts = librispeech.test_other_cuts()
+
+    dev_clean_dl = librispeech.test_dataloaders(dev_clean_cuts)
+    dev_other_dl = librispeech.test_dataloaders(dev_other_cuts)
 
     test_clean_dl = librispeech.test_dataloaders(test_clean_cuts)
     test_other_dl = librispeech.test_dataloaders(test_other_cuts)
 
-    test_sets = ["test-clean", "test-other"]
-    test_dl = [test_clean_dl, test_other_dl]
+    test_sets = ["dev-clean", "dev-other", "test-clean", "test-other"]
+    test_dl = [dev_clean_dl, dev_other_dl, test_clean_dl, test_other_dl]
 
     for test_set, test_dl in zip(test_sets, test_dl):
         results_dict = decode_dataset(
@@ -1039,11 +1061,23 @@ def main():
             ngram_lm_scale=ngram_lm_scale,
         )
 
-        save_results(
+        tot_err = save_results(
             params=params,
             test_set_name=test_set,
             results_dict=results_dict,
         )
+        
+        with (
+            params.res_dir /
+            (
+                f"{test_set}-{params.chunk_size}_{params.beam_size}"
+                f"_{params.avg}_{params.epoch}.cer"
+            )
+        ).open("w") as fout:
+            if len(tot_err) == 1:
+                fout.write(f"{tot_err[0][1]}")
+            else:
+                fout.write("\n".join(f"{k}\t{v}") for k, v in tot_err)
 
     logging.info("Done!")
 

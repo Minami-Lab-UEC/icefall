@@ -15,9 +15,8 @@ for chunk in $1; do
                 --use-averaged-model 1 \
                 --max-duration 700 \
                 --decoding-method greedy_search \
-                --manifest-dir /mnt/host/corpus/csj/fbank3 \
+                --manifest-dir /mnt/host/corpus/csj/volume_rever_fbank \
                 --lang data/lang_char \
-                --transcript-mode disfluent \
                 --res-dir $res_dir/gs_chunk"$chunk"_beam"$beam" \
                 --chunk-size $chunk \
                 --beam-size $beam \
