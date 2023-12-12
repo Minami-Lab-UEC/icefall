@@ -432,6 +432,7 @@ class CifTModel(nn.Module):
                     "encoder_out": encoder_out,
                     "y": y,
                     "alphas": alphas,
+                    "encoder_out_lens": encoder_out_lens
                 }
                 torch.save(pruned_input, "pruned_bad_case.pt")
                 raise Exception(

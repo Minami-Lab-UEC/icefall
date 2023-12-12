@@ -1,7 +1,8 @@
 import torch
 import torch.nn as nn
 from torch.nn import LayerNorm 
-from scaling import BiasNorm,  penalize_abs_values_gt, ScaledLinear
+from scaling import BiasNorm,  penalize_abs_values_gt, ScaledLinear, Whiten
+from zipformer2 import _whitening_schedule
 from torch import Tensor
 import math
 
@@ -120,12 +121,11 @@ class RelPositionalEncoding(torch.nn.Module):
         """
         self.extend_pe(x)
         x_size = x.size(2)
+        left_from = (self.pe.size(2) -  x_size) // 2 
         pos_emb = self.pe[
             :,
             :,
-            self.pe.size(2) // 2
-            - x_size
-            + 1 : self.pe.size(2) // 2  # noqa E203
+            left_from : left_from  # noqa E203
             + x_size,
         ]
         return self.dropout(pos_emb)
@@ -206,17 +206,6 @@ class AttnPhi(Phi):
     def _get_pos(self, src : Tensor):
         B, h, T, C = src.shape
         pos_emb : Tensor = self.pos(src) * (self.d_model ** -0.5)
-        
-        pos_emb = pos_emb.as_strided(
-            (1, h, T, C),
-            (
-                pos_emb.stride(0),
-                pos_emb.stride(1),
-                pos_emb.stride(2) - pos_emb.stride(3),
-                pos_emb.stride(3),
-            ),
-            storage_offset = pos_emb.stride(3) * (T - 1)
-        ) # (B, h, 2T-1, C) -> (B, h, T, C)
         
         return pos_emb
     
@@ -626,6 +615,12 @@ class VanillaPooler(nn.Module):
             self.pooler : Phi = OriCIFPhi()
         else:
             raise TypeError(f"--phi-type {phi_type} not recognised.")
+        # self.whiten = Whiten(
+        #     num_groups=1,
+        #     whitening_limit=_whitening_schedule(4.0, ratio=3.0),
+        #     prob=(0.025, 0.25),
+        #     grad_scale=0.01,
+        # )
     
     def forward(self, src: Tensor, src_lens : Tensor, alphas : Tensor):
         """
@@ -642,4 +637,5 @@ class VanillaPooler(nn.Module):
         src_key_padding_mask = make_pad_mask(src_lens)
         out, out_lens = self.pooler(src, src_key_padding_mask, alphas)
         out = self.norm_final(out)
+        # out = self.whiten(self.norm_final(out))
         return out, out_lens

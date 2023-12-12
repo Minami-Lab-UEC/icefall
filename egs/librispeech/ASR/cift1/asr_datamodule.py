@@ -110,7 +110,7 @@ class LibriSpeechAsrDataModule:
             "single batch. You can reduce it if it causes CUDA OOM.",
         )
         group.add_argument(
-            "--musan-dir", type=Path, help="Path to directory with musan cuts. "
+            "--musan-dir", type=Path, default=None, help="Path to directory with musan cuts. "
         )
         group.add_argument(
             "--bucketing-sampler",
