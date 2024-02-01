@@ -18,7 +18,9 @@ from joiner import Joiner, get_joiner_model, add_joiner_arguments
 from phi import Phi, get_phi_model, add_phi_arguments
 from omega import Omega, get_omega_model, add_omega_arguments
 
-def add_model_argument(parser : argparse.ArgumentParser):
+from pathlib import Path
+
+def add_model_arguments(parser : argparse.ArgumentParser):
     add_zipformer_arguments(parser)
     add_encoder_embed_arguments(parser)
     add_decoder_arguments(parser)
@@ -59,7 +61,6 @@ def get_model(params) -> "CifTModel":
     joiner = get_joiner_model(params)
     phi = get_phi_model(params)
     omega = get_omega_model(params)
-    
     return CifTModel(
         encoder_embed=encoder_embed,
         encoder=encoder,
@@ -178,19 +179,18 @@ class CifTModel(nn.Module):
           encoder_out_lens:
             Encoder output lengths, of shape (B,).
         """
-        # logging.info(f"Memory allocated at entry: {torch.cuda.memory_allocated() // 1000000}M")
         x, x_lens = self.encoder_embed(x, x_lens)
-        # logging.info(f"Memory allocated after encoder_embed: {torch.cuda.memory_allocated() // 1000000}M")
-
         src_key_padding_mask = make_pad_mask(x_lens)
         x = x.permute(1, 0, 2)  # (N, T, C) -> (T, N, C)
 
-        encoder_out, encoder_out_lens = self.encoder(x, x_lens, src_key_padding_mask)
+        encoder_out, encoder_out_lens, feature_mask = self.encoder(x, x_lens, src_key_padding_mask)
 
         encoder_out = encoder_out.permute(1, 0, 2)  # (T, N, C) ->(B, T, C)
+        # Already permuted in zipformer2.py, so that I avoid an 'if' here.
+        # feature_mask = feature_mask.permute(1, 0, 2)
         assert torch.all(encoder_out_lens > 0), (x_lens, encoder_out_lens)
 
-        return encoder_out, encoder_out_lens
+        return encoder_out, encoder_out_lens, feature_mask
 
     def forward_ctc(
         self,
@@ -272,11 +272,6 @@ class CifTModel(nn.Module):
         lm = self.simple_lm_proj(decoder_out)
         am = self.simple_am_proj(encoder_out)
 
-        # if self.training and random.random() < 0.25:
-        #    lm = penalize_abs_values_gt(lm, 100.0, 1.0e-04)
-        # if self.training and random.random() < 0.25:
-        #    am = penalize_abs_values_gt(am, 30.0, 1.0e-04)
-
         with torch.cuda.amp.autocast(enabled=False):
             simple_loss, (px_grad, py_grad) = k2.rnnt_loss_smoothed(
                 lm=lm.float(),
@@ -319,14 +314,15 @@ class CifTModel(nn.Module):
                 ranges=ranges,
                 termination_symbol=blank_id,
                 boundary=boundary,
-                reduction="none",
+                reduction="sum",
             )
 
         return simple_loss, pruned_loss
 
     def _compute_qua_loss(self, alphas : Tensor, target_lens : Tensor) -> Tensor:
         pred_n = alphas.sum(dim=1).squeeze(-1)
-        return nn.functional.l1_loss(pred_n, target_lens, reduction="sum")
+        loss = (pred_n - target_lens).abs() / target_lens
+        return loss.sum()
 
     def _adjust_alphas(self, alphas : Tensor, target_lens : Tensor) -> Tensor:
         if not self.training:
@@ -385,19 +381,16 @@ class CifTModel(nn.Module):
         assert x.size(0) == x_lens.size(0) == y.dim0, (x.shape, x_lens.shape, y.dim0)
 
         # Compute encoder outputs
-        encoder_out, encoder_out_lens = self.forward_encoder(x, x_lens)
+        encoder_out, encoder_out_lens, feature_mask = self.forward_encoder(x, x_lens)
         row_splits = y.shape.row_splits(1)
         y_lens = row_splits[1:] - row_splits[:-1]
 
-        # Compute CIF
-        ratio : Tensor = (target_lens / (y_lens+1e-10)).clamp(min=( 1 / self.prune_range -3))
-        target_lens = (y_lens * ratio).round() #.to(torch.int32)
-        
+        # Compute CIF        
         alphas = self.omega(encoder_out, encoder_out_lens)
-                
+
         qua_loss = self._compute_qua_loss(alphas, target_lens.to(alphas))
         alphas = self._adjust_alphas(alphas, target_lens)
-        encoder_out, encoder_out_lens = self.phi(encoder_out, encoder_out_lens, alphas)
+        encoder_out, encoder_out_lens = self.phi(encoder_out, encoder_out_lens, alphas, feature_mask)
 
         # Compute transducer loss
         simple_loss, pruned_loss = self.forward_transducer(
@@ -420,29 +413,5 @@ class CifTModel(nn.Module):
             )
         else:
             ctc_loss = torch.empty(0)
-
-
-
-        # Error handling for pruned_loss 
-
-        if ((pruned_loss - pruned_loss) != 0.0).any():
-            if self.training:
-                pruned_input = {
-                    "pruned_loss": pruned_loss,
-                    "encoder_out": encoder_out,
-                    "y": y,
-                    "alphas": alphas,
-                    "encoder_out_lens": encoder_out_lens
-                }
-                torch.save(pruned_input, "pruned_bad_case.pt")
-                raise Exception(
-                    "Bad case encountered with pruned loss. Saved to pruned_bad_case.pt"
-                )
-            logging.warning(
-                f"Evaluation: ignoring inf in pruned_loss for loss calculation."
-            )
-            pruned_loss = pruned_loss.masked_fill(~pruned_loss.isfinite(), 0.)
-
-        pruned_loss = torch.sum(pruned_loss)
 
         return simple_loss, pruned_loss, qua_loss, ctc_loss

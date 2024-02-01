@@ -140,9 +140,11 @@ class Phi(nn.Module):
         T1 = out_lens.max()
         
         # All feature vectors which should be masked are added to T1 in scatter_add_, and truncated in x_out
-        firing_points = fire_cumsum.to(torch.int64)
-        firing_points = firing_points.roll(shifts=1, dims=1).masked_fill(src_key_padding_mask, T1)
+        firing_points = (fire_cumsum-0.5).round().to(torch.int64)
+        firing_points = firing_points.roll(shifts=1, dims=1) 
         firing_points[...,0] = 0
+        mask = torch.logical_or(src_key_padding_mask, firing_points == out_lens[..., None])
+        firing_points = firing_points.masked_fill(mask, T1)
         return firing_points, out_lens, T1
     
     def forward(self, src : Tensor, src_key_padding_mask: Tensor, alphas : Tensor) -> Tensor:
@@ -179,7 +181,6 @@ class AttnPhi(Phi):
         d_model,
         dropout = 0.1,
         num_heads = 8,
-        init_query = False,
     ):
         """Attention pooling via query
 
@@ -196,11 +197,7 @@ class AttnPhi(Phi):
             f"d_model {d_model} must be divisible by num_heads {num_heads}."
         )
         self.d_att = d_model // self.num_heads 
-        self.query = nn.Parameter(torch.randn(self.num_heads, self.d_att) * self.d_att ** -0.5)
-        # Afterthought: Might want to test if xavier initialisation improves performance. 
-        if init_query:
-            nn.init.xavier_uniform_(self.query)
-        
+        self.query = nn.Parameter(torch.randn(self.num_heads, self.d_att) * self.d_att ** -0.5)        
         self.pos = RelPositionalEncoding(d_model, dropout, num_heads)
     
     def _get_pos(self, src : Tensor):
@@ -271,7 +268,6 @@ class MiniQAttnPhi(Phi):
         d_att : int,
         dropout = 0.1,
         num_heads = 8,
-        init_query = False,
     ):
         """Attention pooling via query
 
@@ -295,28 +291,11 @@ class MiniQAttnPhi(Phi):
             out_features=d_att,
         )
         
-        self.query = nn.Parameter(torch.randn(self.num_heads, self.d_att) * self.d_att ** -0.5)
-        # Afterthought: Might want to test if xavier initialisation improves performance. 
-        if init_query:
-            nn.init.xavier_uniform_(self.query)
-        
+        self.query = nn.Parameter(torch.randn(self.num_heads, self.d_att) * self.d_att ** -0.5)        
         self.pos = RelPositionalEncoding(d_model, dropout, num_heads)
     
     def _get_pos(self, src : Tensor):
-        B, h, T, C = src.shape
         pos_emb : Tensor = self.pos(src) * (self.d_model ** -0.5)
-        
-        pos_emb = pos_emb.as_strided(
-            (1, h, T, C),
-            (
-                pos_emb.stride(0),
-                pos_emb.stride(1),
-                pos_emb.stride(2) - pos_emb.stride(3),
-                pos_emb.stride(3),
-            ),
-            storage_offset = pos_emb.stride(3) * (T - 1)
-        ) # (B, h, 2T-1, C) -> (B, h, T, C)
-        
         return pos_emb
     
     def forward(self, src: Tensor, src_key_padding_mask : Tensor, alphas : Tensor):
@@ -353,9 +332,8 @@ class MiniQAttnPhi(Phi):
         
         weights = self._ragged_softmax(scores, firing_points[:, None, :].expand_as(scores), T1)
         weights = self.dropout(weights)
-        
-        # pos = self._get_pos(key) # (B, h, T, d_att)
-        value = key + self._get_pos(key) # (B, h, T, d_att)
+
+        value = value + self._get_pos(value) # (B, h, T, d_att)
         x_out = value * weights[..., None]
         x_out = x_out.permute(0, 2, 1, 3).reshape(B, T, -1) # (B, T, C)
         x_out = self._collapse(x_out, firing_points, T1) # (B, T, C) -> (B, M, C)
@@ -601,28 +579,20 @@ class VanillaPooler(nn.Module):
         phi_args = phi_type.split(";")[1] if ";" in phi_type else ""
         
         if "att" in phi_type:
-            head, init_query = phi_args.split(",")
+            head = phi_args.split(",")
             head = int(head)
-            init_query = int(init_query)
-            self.pooler : Phi = AttnPhi(d_model, dropout, num_heads=head, init_query=init_query)
+            self.pooler : Phi = AttnPhi(d_model, dropout, num_heads=head)
         elif "miniatt" in phi_type:
-            head, init_query, d_att = phi_args.split(",")
+            head, d_att = phi_args.split(",")
             head = int(head)
-            init_query = int(init_query)
             d_att = int(d_att)
-            self.pooler : Phi = MiniQAttnPhi(d_model, d_att, dropout, head, init_query)
+            self.pooler : Phi = MiniQAttnPhi(d_model, d_att, dropout, head)
         elif "ori" == phi_type:
             self.pooler : Phi = OriCIFPhi()
         else:
             raise TypeError(f"--phi-type {phi_type} not recognised.")
-        # self.whiten = Whiten(
-        #     num_groups=1,
-        #     whitening_limit=_whitening_schedule(4.0, ratio=3.0),
-        #     prob=(0.025, 0.25),
-        #     grad_scale=0.01,
-        # )
     
-    def forward(self, src: Tensor, src_lens : Tensor, alphas : Tensor):
+    def forward(self, src: Tensor, src_lens : Tensor, alphas : Tensor, feature_mask : Tensor):
         """
 
         Args:
@@ -637,5 +607,5 @@ class VanillaPooler(nn.Module):
         src_key_padding_mask = make_pad_mask(src_lens)
         out, out_lens = self.pooler(src, src_key_padding_mask, alphas)
         out = self.norm_final(out)
-        # out = self.whiten(self.norm_final(out))
+        out = out * feature_mask
         return out, out_lens

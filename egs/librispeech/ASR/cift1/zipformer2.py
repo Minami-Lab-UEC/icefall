@@ -158,7 +158,7 @@ def get_zipformer_model(params) -> nn.Module:
         return tuple(map(int, s.split(",")))
 
     encoder = Zipformer2(
-        output_downsampling_factor=2,
+        output_downsampling_factor=1,
         downsampling_factor=_to_int_tuple(params.downsampling_factor),
         num_encoder_layers=_to_int_tuple(params.num_encoder_layers),
         # encoder_dim=_to_int_tuple(params.encoder_dim),
@@ -264,7 +264,7 @@ class Zipformer2(EncoderInterface):
                 assert len(x) == len(downsampling_factor) and isinstance(x[0], int)
             return x
 
-        self.output_downsampling_factor = output_downsampling_factor  # int
+
         self.downsampling_factor = downsampling_factor  # tuple
         self.encoder_dim = encoder_dim = _to_tuple(encoder_dim)  # tuple
         self.encoder_unmasked_dim = encoder_unmasked_dim = _to_tuple(
@@ -327,10 +327,18 @@ class Zipformer2(EncoderInterface):
             encoders.append(encoder)
 
         self.encoders = nn.ModuleList(encoders)
+        
+        log2_output_downsampling_factor = math.log2(output_downsampling_factor)
+        assert log2_output_downsampling_factor.is_integer(), (output_downsampling_factor, log2_output_downsampling_factor)
+        self.log2_output_downsampling_factor = int(log2_output_downsampling_factor)
 
-        self.downsample_output = SimpleDownsample(
-            max(encoder_dim), downsample=output_downsampling_factor, dropout=dropout
-        )
+        if log2_output_downsampling_factor:
+            self.downsampling_output = SimpleDownsample(
+                max(encoder_dim), downsample=output_downsampling_factor, dropout=dropout,
+            )
+        else:
+            self.downsampling_output = nn.Identity()
+
 
     def get_feature_masks(self, x: Tensor) -> Union[List[float], List[Tensor]]:
         """
@@ -350,7 +358,7 @@ class Zipformer2(EncoderInterface):
         """
         num_encoders = len(self.encoder_dim)
         if not self.training:
-            return [1.0] * num_encoders
+            return [1.0] * (num_encoders+1)
 
         (num_frames0, batch_size, _encoder_dims0) = x.shape
 
@@ -392,6 +400,16 @@ class Zipformer2(EncoderInterface):
 
             feature_masks.append(feature_mask)
 
+        channels = max(self.encoder_dim)
+        feature_mask = torch.ones(
+            1, batch_size, channels, dtype=x.dtype, device=x.device
+        )
+        u1 = max(self.encoder_unmasked_dim)
+        u2 = u1 + (channels - u1) // 2
+        feature_mask[..., u1:u2] *= mask[..., 0:1]
+        feature_mask[..., u2:] *= mask[..., 1:2]
+        feature_masks.append(feature_mask.permute(1, 0, 2))
+        
         return feature_masks
 
     def get_chunk_info(self) -> Tuple[int, int]:
@@ -478,19 +496,15 @@ class Zipformer2(EncoderInterface):
         # if the last output has the largest dimension, x will be unchanged,
         # it will be the same as outputs[-1].  Otherwise it will be concatenated
         # from different pieces of 'outputs', taking each dimension from the
-        # most recent output that has it present.
-        x = self._get_full_dim_output(outputs)
-        x = self.downsample_output(x)
-        # class Downsample has this rounding behavior..
-        assert self.output_downsampling_factor == 2, self.output_downsampling_factor
-        if torch.jit.is_scripting() or torch.jit.is_tracing():
-            lengths = (x_lens + 1) // 2
-        else:
-            with warnings.catch_warnings():
-                warnings.simplefilter("ignore")
-                lengths = (x_lens + 1) // 2
+        # most recent output that has it present.        
 
-        return x, lengths
+        x = self.downsampling_output(x)
+        lengths = x_lens
+        # class Downsample has this rounding behavior..
+        for _ in range(self.log2_output_downsampling_factor):
+            lengths = (lengths + 1) >> 1
+
+        return x, lengths, feature_masks[-1]
 
     def _get_attn_mask(
         self, x: Tensor, chunk_size: int, left_context_chunks: int

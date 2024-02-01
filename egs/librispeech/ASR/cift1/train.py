@@ -17,7 +17,7 @@ from lhotse.cut import Cut
 from lhotse.dataset.sampling.base import CutSampler
 from lhotse.utils import fix_random_seed
 import math
-from model import add_model_argument, get_model
+from model import add_model_arguments, get_model
 from optim import Eden, ScaledAdam
 from tokenizer import Tokenizer
 from torch import Tensor
@@ -42,6 +42,7 @@ from icefall.utils import (
     setup_logger,
     str2bool,
 )
+from targetlens import TargetLength
 
 try:
     from TelegramStreamIO import TelegramStreamIO
@@ -265,7 +266,7 @@ def get_parser():
         default=False,
         help="Whether to use half precision training.",
     )
-    
+
     parser.add_argument(
         "--pad-feature",
         type=int,
@@ -274,8 +275,8 @@ def get_parser():
         Number of frames to pad at the end.
         """,
     )
-    
-    add_model_argument(parser)
+
+    add_model_arguments(parser)
     
     return parser
 
@@ -333,7 +334,7 @@ def get_params() -> AttributeDict:
             "batch_idx_train": 0,
             "log_interval": 50,
             "reset_interval": 200,
-            "valid_interval": 3000,  # For the 100h subset, use 800
+            "valid_interval": 600,  # For the 100h subset, use 800
             # parameters for zipformer
             "feature_dim": 80,
             "subsampling_factor": 4,  # not passed in, this is fixed.
@@ -466,6 +467,7 @@ def compute_loss(
     sp: Tokenizer,
     batch: dict,
     is_training: bool,
+    lm : TargetLength,
 ) -> Tuple[Tensor, MetricsTracker]:
     """
     Compute loss given the model and its inputs.
@@ -508,9 +510,12 @@ def compute_loss(
     texts = supervisions["text"]
     y = sp.encode(texts, out_type=int)
     y = k2.RaggedTensor(y).to(device)
-    
-    target_lens = torch.tensor([s.count(" ")+1 if s else 0 for s in texts], device=device)
 
+    tokenized_sentences = sp.encode(texts, out_type=str)
+    tokenized_sentences = [' '.join(ws) for ws in tokenized_sentences]
+    target_lens = torch.tensor([-lm.score(s, bos=False, eos=False) for s in tokenized_sentences], device=device)
+    target_lens = params.ent2awe_slope * target_lens + params.ent2awe_intercept
+    
     with torch.set_grad_enabled(is_training):
         simple_loss, pruned_loss, qua_loss, ctc_loss = model(
             x=feature,
@@ -537,6 +542,7 @@ def compute_loss(
             else 0.1 + 0.9 * (batch_idx_train / warm_step)
         )
 
+        qua_loss = qua_loss.sqrt()
         loss = simple_loss_scale * simple_loss + pruned_loss_scale * pruned_loss
         loss += qua_loss
 
@@ -554,7 +560,7 @@ def compute_loss(
     info["loss"] = loss.detach().cpu().item()
     info["simple_loss"] = simple_loss.detach().cpu().item()
     info["pruned_loss"] = pruned_loss.detach().cpu().item()
-    info["qua_loss"] = qua_loss.detach().cpu().item()
+    info["qua_loss"] = qua_loss.detach().cpu().item() 
     if params.use_ctc:
         info["ctc_loss"] = ctc_loss.detach().cpu().item()
 
@@ -566,6 +572,7 @@ def compute_validation_loss(
     model: Union[nn.Module, DDP],
     sp: Tokenizer,
     valid_dl: torch.utils.data.DataLoader,
+    lm : TargetLength,
     world_size: int = 1,
 ) -> MetricsTracker:
     """Run the validation process."""
@@ -580,6 +587,7 @@ def compute_validation_loss(
             sp=sp,
             batch=batch,
             is_training=False,
+            lm=lm,
         )
         assert loss.requires_grad is False
         tot_loss = tot_loss + loss_info
@@ -604,6 +612,7 @@ def train_one_epoch(
     train_dl: torch.utils.data.DataLoader,
     valid_dl: torch.utils.data.DataLoader,
     scaler: GradScaler,
+    lm: TargetLength,
     model_avg: Optional[nn.Module] = None,
     tb_writer: Optional[SummaryWriter] = None,
     world_size: int = 1,
@@ -674,6 +683,7 @@ def train_one_epoch(
                     sp=sp,
                     batch=batch,
                     is_training=True,
+                    lm=lm,
                 )
             # summary stats
             tot_loss = (tot_loss * (1 - 1 / params.reset_interval)) + loss_info
@@ -687,7 +697,7 @@ def train_one_epoch(
             scaler.update()
             optimizer.zero_grad()
         except Exception as e:  # noqa
-            save_bad_model()
+            # save_bad_model()
             display_and_save_batch(batch, params=params, sp=sp)
             raise e
 
@@ -777,7 +787,7 @@ def train_one_epoch(
                         "train/grad_scale", cur_grad_scale, params.batch_idx_train
                     )
 
-        if batch_idx % params.valid_interval == 0 and not params.print_diagnostics:
+        if params.batch_idx_train and params.batch_idx_train % params.valid_interval == 0 and not params.print_diagnostics:
             logging.info("Computing validation loss")
             valid_info = compute_validation_loss(
                 params=params,
@@ -785,11 +795,12 @@ def train_one_epoch(
                 sp=sp,
                 valid_dl=valid_dl,
                 world_size=world_size,
+                lm=lm,
             )
             model.train()
             if (
                 HAS_TELEGRAM
-                and batch_idx % (params.valid_interval * 3) == 0
+                and params.batch_idx_train % (params.valid_interval * 3) == 0
                 and not rank
             ):
                 log_mode = logging.warning
@@ -851,8 +862,11 @@ def run(rank, world_size, args):
     params.blank_id = sp.piece_to_id("<blk>")
     params.vocab_size = sp.get_piece_size()
 
-    # if not params.use_transducer:
-    #     params.ctc_loss_scale = 1.0
+    if not params.use_transducer:
+        params.ctc_loss_scale = 1.0
+
+
+    lm = TargetLength.load(params.targetlen_from)
 
     logging.info(params)
 
@@ -909,10 +923,10 @@ def run(rank, world_size, args):
 
     librispeech = LibriSpeechAsrDataModule(args)
 
-    train_cuts = librispeech.train_clean_100_cuts()
     if params.full_libri:
-        train_cuts += librispeech.train_clean_360_cuts()
-        train_cuts += librispeech.train_other_500_cuts()
+        train_cuts = librispeech.train_all_shuf_cuts()
+    else:
+        train_cuts = librispeech.train_clean_100_cuts()
 
     def remove_short_and_long_utt(c: Cut):
         # Keep only utterances with duration between 1 second and 20 seconds
@@ -1005,22 +1019,24 @@ def run(rank, world_size, args):
             tb_writer=tb_writer,
             world_size=world_size,
             rank=rank,
+            lm=lm
         )
 
         if params.print_diagnostics:
             diagnostic.print_diagnostics()
             break
-
-        save_checkpoint(
-            params=params,
-            model=model,
-            model_avg=model_avg,
-            optimizer=optimizer,
-            scheduler=scheduler,
-            sampler=train_dl.sampler,
-            scaler=scaler,
-            rank=rank,
-        )
+        
+        if (params.full_libri) or not (epoch % 2):
+            save_checkpoint(
+                params=params,
+                model=model,
+                model_avg=model_avg,
+                optimizer=optimizer,
+                scheduler=scheduler,
+                sampler=train_dl.sampler,
+                scaler=scaler,
+                rank=rank,
+            )
 
     logging.info("Done!")
 
@@ -1107,8 +1123,29 @@ def main():
     parser = get_parser()
     LibriSpeechAsrDataModule.add_arguments(parser)
     Tokenizer.add_arguments(parser)
+    TargetLength.add_targetlength_arguments(parser)
     args = parser.parse_args()
 
+    # args.world_size = 1
+    # args.exp_dir = Path("cift2/exp_todelete")
+    # args.num_epochs = 2
+    # args.start_epoch = 1
+    # args.use_fp16 = True
+    # args.max_duration = 400
+    # args.lang = Path("data/lang_bpe_500")
+    # args.manifest_dir = Path("data/fbank")
+    # args.full_libri = 0
+    # args.musan_dir = Path("/mnt/host/corpus/musan/musan/fbank")
+    # args.context_size = 4
+    # args.phi_arch = "vanilla"
+    # args.phi_type = "att;8,0"
+    # args.phi_norm = "layernorm"
+    # args.alpha_actv = "abs"
+    # args.omega_type = "Mean"
+    # args.prune_range = 6
+    # args.arpa = "data/lang_bpe_500/librispeech_train_500_1gram.arpa"
+    # args.ent2awe_slope = 0.11864778681654221
+    # args.ent2awe_intercept = 0
 
     world_size = args.world_size
     assert world_size >= 1

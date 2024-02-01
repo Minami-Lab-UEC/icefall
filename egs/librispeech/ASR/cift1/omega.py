@@ -55,7 +55,6 @@ def get_omega_model(params) -> "Omega":
             kernel_size=int(args[0]) if args else 3 ,
             actv_f=actv_f,
             initial_scale=omega_init_scale,
-            # bias=not ("3" in omega_type)
         )
     elif "Mean" in omega_type:
         assert hid_channel is None, hid_channel
