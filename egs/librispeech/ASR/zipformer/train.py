@@ -1174,10 +1174,12 @@ def run(rank, world_size, args):
 
     librispeech = LibriSpeechAsrDataModule(args)
 
-    train_cuts = librispeech.train_clean_100_cuts()
-    if params.full_libri:
-        train_cuts += librispeech.train_clean_360_cuts()
-        train_cuts += librispeech.train_other_500_cuts()
+    if params.full_libri ==1:
+        train_cuts = librispeech.train_all_shuf_cuts()
+    elif params.full_libri == 2:
+        train_cuts = librispeech.train_clean_shuf_cuts()
+    else:
+        train_cuts = librispeech.train_clean_100_cuts()
 
     def remove_short_and_long_utt(c: Cut):
         # Keep only utterances with duration between 1 second and 20 seconds
@@ -1276,16 +1278,17 @@ def run(rank, world_size, args):
             diagnostic.print_diagnostics()
             break
 
-        save_checkpoint(
-            params=params,
-            model=model,
-            model_avg=model_avg,
-            optimizer=optimizer,
-            scheduler=scheduler,
-            sampler=train_dl.sampler,
-            scaler=scaler,
-            rank=rank,
-        )
+        if (params.full_libri) or not (epoch % 2):
+            save_checkpoint(
+                params=params,
+                model=model,
+                model_avg=model_avg,
+                optimizer=optimizer,
+                scheduler=scheduler,
+                sampler=train_dl.sampler,
+                scaler=scaler,
+                rank=rank,
+            )
 
     logging.info("Done!")
 
@@ -1373,14 +1376,14 @@ def main():
     LibriSpeechAsrDataModule.add_arguments(parser)
     args = parser.parse_args()
 
-    args.world_size = 1
-    args.num_epochs = 1
-    args.start_epoch = 1
-    args.use_fp16 = True
-    args.musan_dir = Path("/mnt/host/corpus/musan/musan/fbank")
-    args.exp_dir = "zipformer/exp"
-    args.full_libri = 1
-    args.max_duration = 240
+    # args.world_size = 1
+    # args.num_epochs = 1
+    # args.start_epoch = 1
+    # args.use_fp16 = True
+    # args.musan_dir = Path("/mnt/host/corpus/musan/musan/fbank")
+    # args.exp_dir = "zipformer/exp"
+    # args.full_libri = 1
+    # args.max_duration = 240
 
     args.exp_dir = Path(args.exp_dir)
 

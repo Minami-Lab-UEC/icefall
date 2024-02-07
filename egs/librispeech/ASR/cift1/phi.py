@@ -133,12 +133,12 @@ class RelPositionalEncoding(torch.nn.Module):
 class Phi(nn.Module):
     def __init__(self):
         super().__init__()
-        
+
     def _get_firing_points(self, alphas : Tensor, src_key_padding_mask : Tensor):
         fire_cumsum = alphas.cumsum(dim=1)
-        out_lens = fire_cumsum[:, -1].round().to(torch.int32).clamp(min=1)
+        out_lens = fire_cumsum[:, -1].ceil().to(torch.int32).clamp(min=1)
         T1 = out_lens.max()
-        
+
         # All feature vectors which should be masked are added to T1 in scatter_add_, and truncated in x_out
         firing_points = (fire_cumsum-0.5).round().to(torch.int64)
         firing_points = firing_points.roll(shifts=1, dims=1) 
@@ -146,7 +146,7 @@ class Phi(nn.Module):
         mask = torch.logical_or(src_key_padding_mask, firing_points == out_lens[..., None])
         firing_points = firing_points.masked_fill(mask, T1)
         return firing_points, out_lens, T1
-    
+
     def forward(self, src : Tensor, src_key_padding_mask: Tensor, alphas : Tensor) -> Tensor:
         """
 
@@ -197,7 +197,7 @@ class AttnPhi(Phi):
             f"d_model {d_model} must be divisible by num_heads {num_heads}."
         )
         self.d_att = d_model // self.num_heads 
-        self.query = nn.Parameter(torch.randn(self.num_heads, self.d_att) * self.d_att ** -0.5)        
+        self.query = nn.Parameter(torch.randn(self.num_heads, self.d_att) * self.d_att ** -0.5)
         self.pos = RelPositionalEncoding(d_model, dropout, num_heads)
     
     def _get_pos(self, src : Tensor):
@@ -254,12 +254,27 @@ class AttnPhi(Phi):
         x_max = x.max()
         x_normed = x - x_max
         x_exp = torch.exp(x_normed)
-        x_sumexp : Tensor= torch.zeros((B, self.num_heads, T1+1), dtype=x.dtype, device=x.device) # (B, T1+1)
+        x_sumexp : Tensor= torch.zeros((B, self.num_heads, T1+1), dtype=x.dtype, device=x.device) # (B, h, T1+1)
+        x_sumexp.scatter_add_(dim=-1, index=firing_points, src=x_exp)
+        x_logsumexp = torch.log(x_sumexp) + x_max # (B, h, T1+1)
+        x_denom = x_logsumexp.gather(dim=-1, index=firing_points) # (B, h, T1+1) -> (B, h, T)
+        weights = torch.exp(x - x_denom)
+        return weights        
+        
+    def _ragged_softmax(self, x: Tensor, firing_points: Tensor, T1: int):
+        # ragged softmax via logsumexp trick
+
+        B = x.size(0)
+        x_max = x.max()
+        x_normed = x - x_max
+        x_exp = torch.exp(x_normed)
+        x_sumexp : Tensor= torch.zeros((B, self.num_heads, T1+1), dtype=x.dtype, device=x.device) # (B, h, T1+1)
         x_sumexp.scatter_add_(dim=-1, index=firing_points, src=x_exp)
         x_logsumexp = torch.log(x_sumexp) + x_max # (B, h, T1+1)
         x_denom = x_logsumexp.gather(dim=-1, index=firing_points) # (B, h, T1+1) -> (B, h, T)
         weights = torch.exp(x - x_denom)
         return weights
+
 
 class MiniQAttnPhi(Phi):
     def __init__(
@@ -281,19 +296,19 @@ class MiniQAttnPhi(Phi):
         self.d_att = d_att
         self.num_heads = num_heads
         self.dropout = nn.Dropout(p=dropout)
-        assert not (d_model % self.num_heads), (
+        assert not (d_model % num_heads), (
             f"d_model {d_model} must be divisible by num_heads {num_heads}."
         )
         d_per_head = d_model // self.num_heads 
-        
+
         self.proj_k = ScaledLinear(
             in_features=d_per_head,
             out_features=d_att,
         )
-        
-        self.query = nn.Parameter(torch.randn(self.num_heads, self.d_att) * self.d_att ** -0.5)        
+
+        self.query = nn.Parameter(torch.randn(self.num_heads, d_att) * d_att ** -0.5)
         self.pos = RelPositionalEncoding(d_model, dropout, num_heads)
-    
+
     def _get_pos(self, src : Tensor):
         pos_emb : Tensor = self.pos(src) * (self.d_model ** -0.5)
         return pos_emb
@@ -313,8 +328,8 @@ class MiniQAttnPhi(Phi):
         firing_points, out_lens, T1 = self._get_firing_points(alphas[..., 0], src_key_padding_mask)
         
         B, T, C = src.shape
-        key = src.reshape(B, T, self.num_heads, self.d_att).permute(0, 2, 1, 3) # (B, h, T, d_per_head)
-        key : Tensor = self.proj_k(key) # (B, h, T, d_att)
+        value = src.reshape(B, T, self.num_heads, -1).permute(0, 2, 1, 3) # (B, h, T, d_per_head)
+        key : Tensor = self.proj_k(value) # (B, h, T, d_att)
 
         scores = (self.query[None, :, None, :] * key).sum(dim=-1) # (B, h, T)
         
@@ -353,7 +368,6 @@ class MiniQAttnPhi(Phi):
         x_denom = x_logsumexp.gather(dim=-1, index=firing_points) # (B, h, T1+1) -> (B, h, T)
         weights = torch.exp(x - x_denom)
         return weights
-
 
 class OriCIFPhi(Phi):
     def __init__(
@@ -577,16 +591,15 @@ class VanillaPooler(nn.Module):
             raise TypeError(f"--phi-norm-type {norm_type} not recognised.")
         
         phi_args = phi_type.split(";")[1] if ";" in phi_type else ""
-        
-        if "att" in phi_type:
-            head = phi_args.split(",")
-            head = int(head)
-            self.pooler : Phi = AttnPhi(d_model, dropout, num_heads=head)
-        elif "miniatt" in phi_type:
+        if "miniatt" in phi_type:
             head, d_att = phi_args.split(",")
             head = int(head)
             d_att = int(d_att)
             self.pooler : Phi = MiniQAttnPhi(d_model, d_att, dropout, head)
+        elif "att" in phi_type:
+            head, *_ = phi_args.split(",")
+            head = int(head)
+            self.pooler : Phi = AttnPhi(d_model, dropout, num_heads=head)
         elif "ori" == phi_type:
             self.pooler : Phi = OriCIFPhi()
         else:

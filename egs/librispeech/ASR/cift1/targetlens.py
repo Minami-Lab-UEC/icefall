@@ -43,7 +43,7 @@ class TargetLength:
             default=0.
         )
     
-    def get_targetlen(self, line : str, bos = False, eos = False) -> float:
+    def score(self, line : str, bos = False, eos = False) -> float:
         "Assumes that the string has spaces between each token, not each word."
         raise NotImplementedError
 
@@ -63,7 +63,7 @@ class UnigramLM(TargetLength):
         self.bos_symbol = "<s>"
         self.eos_symbol = "</s>"
 
-    def get_targetlen(self, line : str, bos = False, eos = False) -> float:
+    def score(self, line : str, bos = False, eos = False) -> float:
         words = line.split(" ")
         logprob = 0
         if bos:
@@ -81,21 +81,23 @@ class KenlmNgramLM(TargetLength):
     def __init__(self, arpa_str : str):
         self.model = kenlm.Model(arpa_str)
 
-    def get_targetlen(self, line : str, bos = False, eos = False) -> float:
+    def score(self, line : str, bos = False, eos = False) -> float:
         return self.model.score(line, bos=bos, eos=eos)
 
 class FromWordCount(TargetLength):
     def __init__(self, *args, **kwargs):
         pass
 
-    def get_targetlen(self, line : str, bos = False, eos = False) -> float:
+    def score(self, line : str, bos = False, eos = False) -> float:
         tgtlen = line.count("▁") + 1
-        return tgtlen
+        # Negative to align with the entropy scores from ngrams which are negative.
+        return -tgtlen
 
 class FromTokenCount(TargetLength):
     def __init__(self, *args, **kwargs):
         pass
 
-    def get_targetlen(self, line : str, bos = False, eos = False) -> float:
+    def score(self, line : str, bos = False, eos = False) -> float:
         tgtlen = line.count(" ") + 1
-        return tgtlen
+        # Negative to align with the entropy scores from ngrams which are negative.
+        return -tgtlen

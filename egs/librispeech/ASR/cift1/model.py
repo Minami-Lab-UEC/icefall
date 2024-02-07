@@ -179,7 +179,10 @@ class CifTModel(nn.Module):
           encoder_out_lens:
             Encoder output lengths, of shape (B,).
         """
+        # logging.info(f"Memory allocated at entry: {torch.cuda.memory_allocated() // 1000000}M")
         x, x_lens = self.encoder_embed(x, x_lens)
+        # logging.info(f"Memory allocated after encoder_embed: {torch.cuda.memory_allocated() // 1000000}M")
+
         src_key_padding_mask = make_pad_mask(x_lens)
         x = x.permute(1, 0, 2)  # (N, T, C) -> (T, N, C)
 
@@ -214,9 +217,9 @@ class CifTModel(nn.Module):
 
         ctc_loss = torch.nn.functional.ctc_loss(
             log_probs=ctc_output.permute(1, 0, 2),  # (T, N, C)
-            targets=targets,
-            input_lengths=encoder_out_lens,
-            target_lengths=target_lengths,
+            targets=targets.cpu(),
+            input_lengths=encoder_out_lens.cpu(),
+            target_lengths=target_lengths.cpu(),
             reduction="sum",
         )
         return ctc_loss
@@ -272,6 +275,11 @@ class CifTModel(nn.Module):
         lm = self.simple_lm_proj(decoder_out)
         am = self.simple_am_proj(encoder_out)
 
+        # if self.training and random.random() < 0.25:
+        #    lm = penalize_abs_values_gt(lm, 100.0, 1.0e-04)
+        # if self.training and random.random() < 0.25:
+        #    am = penalize_abs_values_gt(am, 30.0, 1.0e-04)
+
         with torch.cuda.amp.autocast(enabled=False):
             simple_loss, (px_grad, py_grad) = k2.rnnt_loss_smoothed(
                 lm=lm.float(),
@@ -316,7 +324,6 @@ class CifTModel(nn.Module):
                 boundary=boundary,
                 reduction="sum",
             )
-
         return simple_loss, pruned_loss
 
     def _compute_qua_loss(self, alphas : Tensor, target_lens : Tensor) -> Tensor:
@@ -385,9 +392,22 @@ class CifTModel(nn.Module):
         row_splits = y.shape.row_splits(1)
         y_lens = row_splits[1:] - row_splits[:-1]
 
-        # Compute CIF        
-        alphas = self.omega(encoder_out, encoder_out_lens)
+        if self.use_ctc:
+            # Compute CTC loss
+            targets = y.values
+            ctc_loss = self.forward_ctc(
+                encoder_out=encoder_out,
+                encoder_out_lens=encoder_out_lens,
+                targets=targets.to(x.device),
+                target_lengths=y_lens,
+            )
+        else:
+            ctc_loss = torch.empty(0)
 
+        # Compute CIF
+        # ratio : Tensor = (target_lens / (y_lens+1e-10)).clamp(min=( 1 / self.prune_range -3))
+        # target_lens = (y_lens * ratio).round() #.to(torch.int32)
+        alphas = self.omega(encoder_out, encoder_out_lens)
         qua_loss = self._compute_qua_loss(alphas, target_lens.to(alphas))
         alphas = self._adjust_alphas(alphas, target_lens)
         encoder_out, encoder_out_lens = self.phi(encoder_out, encoder_out_lens, alphas, feature_mask)
@@ -401,17 +421,5 @@ class CifTModel(nn.Module):
             am_scale=am_scale,
             lm_scale=lm_scale,
         )
-
-        if self.use_ctc:
-            # Compute CTC loss
-            targets = y.values
-            ctc_loss = self.forward_ctc(
-                encoder_out=encoder_out,
-                encoder_out_lens=encoder_out_lens,
-                targets=targets,
-                target_lengths=y_lens,
-            )
-        else:
-            ctc_loss = torch.empty(0)
 
         return simple_loss, pruned_loss, qua_loss, ctc_loss

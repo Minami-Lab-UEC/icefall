@@ -151,6 +151,12 @@ def add_zipformer_arguments(parser : argparse.ArgumentParser):
         "be converted to a number of chunks.  If splitting into chunks, "
         "chunk left-context frames will be chosen randomly from this list; else not relevant.",
     )
+    
+    group.add_argument(
+        "--output-downsampling-factor",
+        type=int,
+        default=1,
+    )
 
 
 def get_zipformer_model(params) -> nn.Module:
@@ -158,7 +164,7 @@ def get_zipformer_model(params) -> nn.Module:
         return tuple(map(int, s.split(",")))
 
     encoder = Zipformer2(
-        output_downsampling_factor=1,
+        output_downsampling_factor=params.output_downsampling_factor,
         downsampling_factor=_to_int_tuple(params.downsampling_factor),
         num_encoder_layers=_to_int_tuple(params.num_encoder_layers),
         # encoder_dim=_to_int_tuple(params.encoder_dim),
@@ -339,6 +345,9 @@ class Zipformer2(EncoderInterface):
         else:
             self.downsampling_output = nn.Identity()
 
+        # self.downsample_output = SimpleDownsample(
+        #     max(encoder_dim), downsample=output_downsampling_factor, dropout=dropout
+        # )
 
     def get_feature_masks(self, x: Tensor) -> Union[List[float], List[Tensor]]:
         """
@@ -496,11 +505,19 @@ class Zipformer2(EncoderInterface):
         # if the last output has the largest dimension, x will be unchanged,
         # it will be the same as outputs[-1].  Otherwise it will be concatenated
         # from different pieces of 'outputs', taking each dimension from the
-        # most recent output that has it present.        
-
+        # most recent output that has it present.
+        x = self._get_full_dim_output(outputs)
+        # x = self.downsample_output(x)
+        # class Downsample has this rounding behavior..
+        # assert self.output_downsampling_factor == 2, self.output_downsampling_factor
+        # if torch.jit.is_scripting() or torch.jit.is_tracing():
+        #     lengths = (x_lens + 1) // 2
+        # else:
+        #     with warnings.catch_warnings():
+        #         warnings.simplefilter("ignore")
+        #         lengths = (x_lens + 1) // 2
         x = self.downsampling_output(x)
         lengths = x_lens
-        # class Downsample has this rounding behavior..
         for _ in range(self.log2_output_downsampling_factor):
             lengths = (lengths + 1) >> 1
 

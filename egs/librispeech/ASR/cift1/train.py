@@ -542,7 +542,6 @@ def compute_loss(
             else 0.1 + 0.9 * (batch_idx_train / warm_step)
         )
 
-        qua_loss = qua_loss.sqrt()
         loss = simple_loss_scale * simple_loss + pruned_loss_scale * pruned_loss
         loss += qua_loss
 
@@ -862,10 +861,6 @@ def run(rank, world_size, args):
     params.blank_id = sp.piece_to_id("<blk>")
     params.vocab_size = sp.get_piece_size()
 
-    if not params.use_transducer:
-        params.ctc_loss_scale = 1.0
-
-
     lm = TargetLength.load(params.targetlen_from)
 
     logging.info(params)
@@ -923,8 +918,10 @@ def run(rank, world_size, args):
 
     librispeech = LibriSpeechAsrDataModule(args)
 
-    if params.full_libri:
+    if params.full_libri ==1:
         train_cuts = librispeech.train_all_shuf_cuts()
+    elif params.full_libri == 2:
+        train_cuts = librispeech.train_clean_shuf_cuts()
     else:
         train_cuts = librispeech.train_clean_100_cuts()
 

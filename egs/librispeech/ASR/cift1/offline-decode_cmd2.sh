@@ -3,18 +3,22 @@ res_dir=$5
 exp_dir=$6
 setup=$7
 epoch=$8
+maxsyms=$9
+beamsearchtype=${10}
 args=$(sed '/^##/,$d' $setup)
 
 for chunk in $1; do
     for beam in $2; do
         for avg in $3; do
-            for maxsym in $9; do
+            for maxsym in $maxsyms; do
                 echo "$args" | xargs -a - python cift1/decode.py \
                     --exp-dir $exp_dir \
                     --epoch $epoch \
                     --avg $avg \
+                    --use-averaged-model 1 \
                     --max-duration 1500 \
                     --decoding-method beam_search \
+                    --beam-search-type $beamsearchtype \
                     --manifest-dir data/fbank \
                     --lang data/lang_bpe_500 \
                     --max-sym-per-frame $maxsym \
@@ -22,7 +26,6 @@ for chunk in $1; do
                     --chunk-size $chunk \
                     --beam-size $beam \
                     --gpu $gpu \
-                    --pad-feature 30 \
                     --left-context-frames 64 \
                     --causal 1
             done

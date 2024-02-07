@@ -84,8 +84,9 @@ class LibriSpeechAsrDataModule:
         )
         group.add_argument(
             "--full-libri",
-            type=str2bool,
-            default=True,
+            type=int,
+            choices=[0,1,2],
+            default=1,
             help="""Used only when --mini-libri is False.When enabled,
             use 960h LibriSpeech. Otherwise, use 100h subset.""",
         )
@@ -110,7 +111,7 @@ class LibriSpeechAsrDataModule:
             "single batch. You can reduce it if it causes CUDA OOM.",
         )
         group.add_argument(
-            "--musan-dir", type=Path, help="Path to directory with musan cuts. "
+            "--musan-dir", type=Path, default=None, help="Path to directory with musan cuts. "
         )
         group.add_argument(
             "--bucketing-sampler",
@@ -440,6 +441,16 @@ class LibriSpeechAsrDataModule:
         )
         return load_manifest_lazy(
             self.args.manifest_dir / "librispeech_cuts_train-all-shuf.jsonl.gz"
+        )
+
+    @lru_cache()
+    def train_clean_shuf_cuts(self) -> CutSet:
+        logging.info(
+            "About to get the shuffled train-clean-100 and \
+            train-clean-360"
+        )
+        return load_manifest_lazy(
+            self.args.manifest_dir / "librispeech_cuts_train-clean-shuf.jsonl.gz"
         )
 
     @lru_cache()

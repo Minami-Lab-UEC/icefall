@@ -189,9 +189,16 @@ def get_parser():
 
     parser.add_argument(
         "--exp-dir",
-        type=str,
+        type=Path,
         default="zipformer/exp",
         help="The experiment dir",
+    )
+
+    parser.add_argument(
+        "--res-dir",
+        type=Path,
+        default="zipformer/exp",
+        help="The result dir",
     )
 
     parser.add_argument(
@@ -361,6 +368,12 @@ def get_parser():
     )
 
     parser.add_argument(
+        "--gpu",
+        type=int,
+        default=None,
+    )
+
+    parser.add_argument(
         "--context-file",
         type=str,
         default="",
@@ -370,6 +383,13 @@ def get_parser():
         modified_beam_search_LODR.
         """,
     )
+
+    parser.add_argument(
+        "--pad-feature",
+        type=int,
+        default=0,
+    )
+
     add_model_arguments(parser)
 
     return parser
@@ -434,13 +454,12 @@ def decode_one_batch(
     supervisions = batch["supervisions"]
     feature_lens = supervisions["num_frames"].to(device)
 
-    if params.causal:
+    if params.pad_feature:
         # this seems to cause insertions at the end of the utterance if used with zipformer.
-        pad_len = 30
-        feature_lens += pad_len
+        feature_lens += params.pad_feature
         feature = torch.nn.functional.pad(
             feature,
-            pad=(0, 0, 0, pad_len),
+            pad=(0, 0, 0, params.pad_feature),
             value=LOG_EPS,
         )
 
@@ -750,6 +769,8 @@ def save_results(
         s += "{}\t{}{}\n".format(key, val, note)
         note = ""
     logging.info(s)
+    
+    return test_set_wers
 
 
 @torch.no_grad()
@@ -776,7 +797,8 @@ def main():
         "modified_beam_search_lm_rescore",
         "modified_beam_search_lm_rescore_LODR",
     )
-    params.res_dir = params.exp_dir / params.decoding_method
+    if not params.res_dir:
+        params.res_dir = params.exp_dir / params.decoding_method
 
     if os.path.exists(params.context_file):
         params.has_contexts = True
@@ -834,8 +856,8 @@ def main():
     logging.info("Decoding started")
 
     device = torch.device("cpu")
-    if torch.cuda.is_available():
-        device = torch.device("cuda", 0)
+    if torch.cuda.is_available() and params.gpu is not None:
+        device = torch.device("cuda", params.gpu)
 
     logging.info(f"Device: {device}")
 
@@ -1018,14 +1040,19 @@ def main():
 
     test_clean_cuts = librispeech.test_clean_cuts()
     test_other_cuts = librispeech.test_other_cuts()
+    dev_clean_cuts = librispeech.dev_clean_cuts()
+    dev_other_cuts = librispeech.dev_other_cuts()
+
 
     test_clean_dl = librispeech.test_dataloaders(test_clean_cuts)
     test_other_dl = librispeech.test_dataloaders(test_other_cuts)
+    dev_clean_dl = librispeech.test_dataloaders(dev_clean_cuts)
+    dev_other_dl = librispeech.test_dataloaders(dev_other_cuts)
+    
+    test_sets = ["test-clean", "test-other", "dev-clean", "dev-other"]
+    test_dls = [test_clean_dl, test_other_dl, dev_clean_dl, dev_other_dl]
 
-    test_sets = ["test-clean", "test-other"]
-    test_dl = [test_clean_dl, test_other_dl]
-
-    for test_set, test_dl in zip(test_sets, test_dl):
+    for test_set, test_dl in zip(test_sets, test_dls):
         results_dict = decode_dataset(
             dl=test_dl,
             params=params,
@@ -1039,11 +1066,23 @@ def main():
             ngram_lm_scale=ngram_lm_scale,
         )
 
-        save_results(
+        tot_err = save_results(
             params=params,
             test_set_name=test_set,
             results_dict=results_dict,
         )
+
+        with (
+            params.res_dir
+            / (
+                f"{test_set}-{params.beam_size}"
+                f"_{params.avg}_{params.epoch}_1.cer"
+            )
+        ).open("w") as fout:
+            if len(tot_err) == 1:
+                fout.write(f"{tot_err[0][1]}")
+            else:
+                fout.write("\n".join(f"{k}\t{v}") for k, v in tot_err)
 
     logging.info("Done!")
 

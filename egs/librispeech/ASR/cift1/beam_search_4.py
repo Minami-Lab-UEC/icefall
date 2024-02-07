@@ -14,7 +14,6 @@ class Hypothesis:
         # Newly predicted tokens are appended to `ys`.
         self.ys = ys
         # The log prob of ys.
-        # It is independent of the gravitational field
         self.log_prob = log_prob
         self.T = T
         self.t = t
@@ -100,23 +99,27 @@ class HypothesisList(object):
                     # (like the 'trunc' function NOT 'floor'). This results in incorrect rounding for negative values. To keep the current behavior,
                     # use torch.div(a, b, rounding_mode='trunc'), or for actual floor division, use torch.div(a, b, rounding_mode='floor').
 
-                    hyp : Hypothesis = active_hyps_list[hyp_idx // self.V]
+                    this_hyp_idx = hyp_idx // self.V
+                    hyp : Hypothesis = active_hyps_list[this_hyp_idx]
                 new_ys: List[int] = hyp.ys
                 t = hyp.t
                 s = hyp.s
 
-                if (
-                    self.max_s_per_t
-                    and s < self.max_s_per_t
-                    and new_token not in self.move_t_syms
-                ):
-                    new_ys = new_ys + [new_token]
-                    # move in u direction
-                    s += 1
-                else:
-                    # move in t direction
-                    t += 1
+                # ------------------------------------------------------------------------------------------------------
+                # This part is different from beam_search_5.py
+
+                if new_token in self.move_t_syms:
+                    t += 1 
                     s = 0
+                else:
+                    new_ys = new_ys + [new_token]
+                    if s == self.max_s_per_t:
+                        t += 1
+                        s = 0
+                    else:
+                        # move in u direction
+                        s += 1
+                # -------------------------------------------------------------------------------------------------------
 
                 # get original probability
                 log_prob = new_log_prob 

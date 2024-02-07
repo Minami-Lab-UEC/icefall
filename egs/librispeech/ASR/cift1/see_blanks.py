@@ -113,22 +113,23 @@ import logging
 import math
 from collections import defaultdict
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
+import k2
 import torch
 import torch.nn as nn
 from asr_datamodule import LibriSpeechAsrDataModule
-from beam_search_4 import (
-    beam_search as beam_search4,
-    greedy_search as greedy_search4,
+from beam_search5 import (  # fast_beam_search_nbest,; fast_beam_search_nbest_LG,; fast_beam_search_nbest_oracle,; fast_beam_search_one_best,; greedy_search_batch,; modified_beam_search,
+    beam_search as beam_search_5,
+    greedy_search as greedy_search_5,
 )
-from beam_search_5 import (
-    beam_search as beam_search5,
-    greedy_search as greedy_search5,
+from beam_search4 import (
+    beam_search as beam_search_4,
+    greedy_search as greedy_search_4,
 )
 from tokenizer import Tokenizer
 from train import get_params
-from model import add_model_arguments, get_model, CifTModel
+from model import add_model_argument, get_model, CifTModel
 
 from icefall.checkpoint import (
     average_checkpoints,
@@ -136,6 +137,7 @@ from icefall.checkpoint import (
     find_checkpoints,
     load_checkpoint,
 )
+from icefall.lexicon import Lexicon
 from icefall.utils import (
     AttributeDict,
     setup_logger,
@@ -143,7 +145,10 @@ from icefall.utils import (
     str2bool,
     write_error_stats,
 )
-from targetlens import TargetLength
+import os
+from icefall import ContextGraph, LmScorer, NgramLm
+import sentencepiece as spm
+
 LOG_EPS = math.log(1e-10)
 
 
@@ -197,43 +202,11 @@ def get_parser():
         default="zipformer/exp",
         help="The experiment dir",
     )
-
-    parser.add_argument(
-        "--bpe-model",
-        type=str,
-        default="data/lang_bpe_500/bpe.model",
-        help="Path to the BPE model",
-    )
-
-    parser.add_argument(
-        "--lang-dir",
-        type=Path,
-        default="data/lang_bpe_500",
-        help="The lang dir containing word table and LG graph",
-    )
     
     parser.add_argument(
         "--res-dir",
         type=Path,
         default=None,
-    )
-
-    parser.add_argument(
-        "--decoding-method",
-        type=str,
-        default="greedy_search",
-        help="""Possible values are:
-          - greedy_search
-          - beam_search
-          - modified_beam_search
-          - modified_beam_search_LODR
-          - fast_beam_search
-          - fast_beam_search_nbest
-          - fast_beam_search_nbest_oracle
-          - fast_beam_search_nbest_LG
-        If you use fast_beam_search_nbest_LG, you have to specify
-        `--lang-dir`, which should contain `LG.pt`.
-        """,
     )
 
     parser.add_argument(
@@ -246,122 +219,11 @@ def get_parser():
     )
 
     parser.add_argument(
-        "--beam",
-        type=float,
-        default=20.0,
-        help="""A floating point value to calculate the cutoff score during beam
-        search (i.e., `cutoff = max-score - beam`), which is the same as the
-        `beam` in Kaldi.
-        Used only when --decoding-method is fast_beam_search,
-        fast_beam_search_nbest, fast_beam_search_nbest_LG,
-        and fast_beam_search_nbest_oracle
-        """,
-    )
-
-    parser.add_argument(
-        "--ngram-lm-scale",
-        type=float,
-        default=0.01,
-        help="""
-        Used only when --decoding-method is fast_beam_search_nbest_LG.
-        It specifies the scale for n-gram LM scores.
-        """,
-    )
-
-    parser.add_argument(
-        "--max-contexts",
-        type=int,
-        default=8,
-        help="""Used only when --decoding-method is
-        fast_beam_search, fast_beam_search_nbest, fast_beam_search_nbest_LG,
-        and fast_beam_search_nbest_oracle""",
-    )
-
-    parser.add_argument(
-        "--max-states",
-        type=int,
-        default=64,
-        help="""Used only when --decoding-method is
-        fast_beam_search, fast_beam_search_nbest, fast_beam_search_nbest_LG,
-        and fast_beam_search_nbest_oracle""",
-    )
-
-    parser.add_argument(
         "--max-sym-per-frame",
         type=int,
         default=1,
         help="""Maximum number of symbols per frame.
         Used only when --decoding-method is greedy_search""",
-    )
-
-    parser.add_argument(
-        "--num-paths",
-        type=int,
-        default=200,
-        help="""Number of paths for nbest decoding.
-        Used only when the decoding method is fast_beam_search_nbest,
-        fast_beam_search_nbest_LG, and fast_beam_search_nbest_oracle""",
-    )
-
-    parser.add_argument(
-        "--nbest-scale",
-        type=float,
-        default=0.5,
-        help="""Scale applied to lattice scores when computing nbest paths.
-        Used only when the decoding method is fast_beam_search_nbest,
-        fast_beam_search_nbest_LG, and fast_beam_search_nbest_oracle""",
-    )
-
-    parser.add_argument(
-        "--use-shallow-fusion",
-        type=str2bool,
-        default=False,
-        help="""Use neural network LM for shallow fusion.
-        If you want to use LODR, you will also need to set this to true
-        """,
-    )
-
-    parser.add_argument(
-        "--lm-type",
-        type=str,
-        default="rnn",
-        help="Type of NN lm",
-        choices=["rnn", "transformer"],
-    )
-
-    parser.add_argument(
-        "--lm-scale",
-        type=float,
-        default=0.3,
-        help="""The scale of the neural network LM
-        Used only when `--use-shallow-fusion` is set to True.
-        """,
-    )
-
-    parser.add_argument(
-        "--tokens-ngram",
-        type=int,
-        default=2,
-        help="""The order of the ngram lm.
-        """,
-    )
-
-    parser.add_argument(
-        "--backoff-id",
-        type=int,
-        default=500,
-        help="ID of the backoff symbol in the ngram LM",
-    )
-
-    parser.add_argument(
-        "--context-score",
-        type=float,
-        default=2,
-        help="""
-        The bonus score of each token for the context biasing words/phrases.
-        Used only when --decoding-method is modified_beam_search and
-        modified_beam_search_LODR.
-        """,
     )
     
     parser.add_argument(
@@ -370,16 +232,6 @@ def get_parser():
         default=None,
     )
 
-    parser.add_argument(
-        "--context-file",
-        type=str,
-        default="",
-        help="""
-        The path of the context biasing lists, one word/phrase each line
-        Used only when --decoding-method is modified_beam_search and
-        modified_beam_search_LODR.
-        """,
-    )
 
     parser.add_argument(
         "--pad-feature",
@@ -387,21 +239,109 @@ def get_parser():
         default=0,
     )
 
-    parser.add_argument(
-        "--beam-search-type",
-        type=int,
-        choices=[4,5],
-        default=5,
-    )
 
-    add_model_arguments(parser)
+    add_model_argument(parser)
 
     return parser
 
 
+
+def greedy_search(
+    model: CifTModel,
+    encoder_out: torch.Tensor,
+    max_sym_per_frame: int,
+) -> List[int]:
+    """Greedy search for a single utterance.
+    Args:
+      model:
+        An instance of `Transducer`.
+      encoder_out:
+        A tensor of shape (N, T, C) from the encoder. Support only N==1 for now.
+      max_sym_per_frame:
+        Maximum number of symbols per frame. If it is set to 0, the WER
+        would be 100%.
+    Returns:
+      If return_timestamps is False, return the decoded result.
+      Else, return a DecodingResults object containing
+      decoded result and corresponding timestamps.
+    """
+    assert encoder_out.ndim == 3
+
+    # support only batch_size == 1 for now
+    assert encoder_out.size(0) == 1, encoder_out.size(0)
+
+    blank_id = model.decoder.blank_id
+    context_size = model.decoder.context_size
+    unk_id = getattr(model, "unk_id", blank_id)
+
+    device = next(model.parameters()).device
+
+    decoder_input = torch.tensor(
+        [-1] * (context_size - 1) + [blank_id], device=device, dtype=torch.int64
+    ).reshape(1, context_size)
+
+    decoder_out = model.decoder(decoder_input, need_pad=False)
+    decoder_out = model.joiner.decoder_proj(decoder_out)
+
+    encoder_out = model.joiner.encoder_proj(encoder_out)
+
+    T = encoder_out.size(1)
+    t = 0
+    hyp = [blank_id] * context_size
+    hyp_w_blanks = []
+
+
+    # Maximum symbols per utterance.
+    max_sym_per_utt = 1000
+
+    # symbols per frame
+    sym_per_frame = 0
+
+    # symbols per utterance decoded so far
+    sym_per_utt = 0
+
+    while t < T and sym_per_utt < max_sym_per_utt:
+        if sym_per_frame >= max_sym_per_frame:
+            hyp_w_blanks.append(blank_id)
+            sym_per_frame = 0
+            t += 1
+            continue
+
+        # fmt: off
+        current_encoder_out = encoder_out[:, t:t+1, None, :] #.unsqueeze(2)
+        # fmt: on
+        logits = model.joiner(
+            current_encoder_out, decoder_out.unsqueeze(1), project_input=False
+        )
+        # logits is (1, 1, 1, vocab_size)
+
+        y = logits.argmax().item()
+        if y not in (blank_id, unk_id):
+            hyp.append(y)
+            decoder_input = torch.tensor([hyp[-context_size:]], device=device).reshape(
+                1, context_size
+            )
+
+            decoder_out = model.decoder(decoder_input, need_pad=False)
+            decoder_out = model.joiner.decoder_proj(decoder_out)
+
+            sym_per_utt += 1
+            sym_per_frame += 1
+
+        else:
+            # hyp.append(y)
+            sym_per_frame = 0
+            t += 1
+        hyp_w_blanks.append(y)
+    hyp = hyp[context_size:]  # remove blanks
+
+    return hyp, hyp_w_blanks
+
+
+
 def decode_one_batch(
     params: AttributeDict,
-    model: CifTModel,
+    model: nn.Module,
     sp: Tokenizer,
     batch: dict,
 ) -> Dict[str, List[List[str]]]:
@@ -464,37 +404,27 @@ def decode_one_batch(
     encoder_out2, encoder_out_lens2 = model.phi(encoder_out, encoder_out_lens, alphas, feature_mask)
     batch_size = encoder_out2.size(0)
 
-    global greedy_search, beam_search
-    if params.decoding_method == "greedy_search":
-        hyps = []
-        for i in range(batch_size):
-            hyp = greedy_search(
-                model=model,
-                encoder_out=encoder_out2[i, None, : encoder_out_lens2[i]],
-                max_sym_per_frame=params.max_sym_per_frame,
-            )
-            hyps.append(sp.text2word(sp.decode(hyp)))
-    else:
-        hyps = beam_search(
+    hyps = []
+    hyps_w_blank = []
+    for i in range(batch_size):
+        hyp, hyp_w_blank = greedy_search(
             model=model,
-            encoder_out=encoder_out2,
-            encoder_out_lens=encoder_out_lens2,
-            beam=params.beam_size,
-            max_s_per_t=params.max_sym_per_frame,
-            # gaussian_diag_cov=params.gaussian_diag_cov,
+            encoder_out=encoder_out2[i, None, : encoder_out_lens2[i]],
+            max_sym_per_frame=params.max_sym_per_frame,
         )
-        hyps = [sp.text2word(h) for h in sp.decode(hyps)]
+        hyps.append(sp.text2word(sp.decode(hyp)))
+        hyp_w_blank = sp.encode(sp.decode(hyp_w_blank), out_type=str)
+        hyp_w_blank = ' '.join(hyp_w_blank).replace("<blk>", "∅")
+        hyps_w_blank.append(hyp_w_blank)
 
-    if params.decoding_method == "greedy_search":
-        return {"greedy_search": hyps}
-    else:
-        return {f"beam_size_{params.beam_size}": hyps}
+    return {"greedy_search": (hyps, hyps_w_blank)}
+
 
 
 def decode_dataset(
     dl: torch.utils.data.DataLoader,
     params: AttributeDict,
-    model: CifTModel,
+    model: nn.Module,
     sp: Tokenizer,
 ) -> Dict[str, List[Tuple[str, List[str], List[str]]]]:
     """Decode dataset.
@@ -508,6 +438,12 @@ def decode_dataset(
         The neural model.
       sp:
         The BPE model.
+      word_table:
+        The word symbol table.
+      decoding_graph:
+        The decoding graph. Can be either a `k2.trivial_graph` or HLG, Used
+        only when --decoding-method is fast_beam_search, fast_beam_search_nbest,
+        fast_beam_search_nbest_oracle, and fast_beam_search_nbest_LG.
     Returns:
       Return a dict, whose key may be "greedy_search" if greedy search
       is used, or it may be "beam_7" if beam size of 7 is used.
@@ -522,10 +458,7 @@ def decode_dataset(
     except TypeError:
         num_batches = "?"
 
-    if params.decoding_method == "greedy_search":
-        log_interval = 50
-    else:
-        log_interval = 20
+    log_interval = 50
 
     results = defaultdict(list)
     for batch_idx, batch in enumerate(dl):
@@ -539,12 +472,12 @@ def decode_dataset(
             batch=batch,
         )
 
-        for name, hyps in hyps_dict.items():
+        for name, (hyps, hyps_w_blank) in hyps_dict.items():
             this_batch = []
             assert len(hyps) == len(texts)
-            for cut_id, hyp_words, ref_text in zip(cut_ids, hyps, texts):
+            for cut_id, hyp_words, hyp_w_blank, ref_text in zip(cut_ids, hyps, hyps_w_blank, texts):
                 ref_words = sp.text2word(ref_text)
-                this_batch.append((cut_id, ref_words, hyp_words))
+                this_batch.append((cut_id, ref_words, hyp_words, hyp_w_blank))
 
             results[name].extend(this_batch)
 
@@ -568,19 +501,26 @@ def save_results(
         recog_path = (
             params.res_dir / f"recogs-{test_set_name}-{key}-{params.suffix}.txt"
         )
+        wblank_path = (
+            params.res_dir / f"wblank-{test_set_name}-{key}-{params.suffix}.txt"
+        )
         results = sorted(results)
-        store_transcripts(filename=recog_path, texts=results)
+        noblank_results = []
+        with open(wblank_path, "w", encoding="utf8") as f1, open(recog_path, "w") as f2:
+            for cut_id, ref, hyp, hyp_w_blank in results:
+                print(f"{cut_id}:\thyp={hyp_w_blank}", file=f1)
+                print(f"{cut_id}:\tref={ref}", file=f2)
+                print(f"{cut_id}:\thyp={hyp}",file=f2)
+                noblank_results.append((cut_id, ref, hyp))
 
-        logging.info(f"The transcripts are stored in {recog_path}")
+        logging.info(f"The transcripts are stored in {recog_path} and {wblank_path}")
 
-        # The following prints out WERs, per-word error statistics and aligned
-        # ref/hyp pairs.
         errs_filename = (
             params.res_dir / f"errs-{test_set_name}-{key}-{params.suffix}.txt"
         )
         with open(errs_filename, "w") as f:
             wer = write_error_stats(
-                f, f"{test_set_name}-{key}", results, enable_log=True
+                f, f"{test_set_name}-{key}", noblank_results, enable_log=True
             )
             test_set_wers[key] = wer
 
@@ -604,25 +544,22 @@ def save_results(
 
     return test_set_wers
 
+
+
 @torch.no_grad()
 def main():
     parser = get_parser()
     LibriSpeechAsrDataModule.add_arguments(parser)
+    LmScorer.add_arguments(parser)
     Tokenizer.add_arguments(parser)
-    # Not used, but just to ensure that the experiment arguments are parsed.
-    TargetLength.add_targetlength_arguments(parser)
     args = parser.parse_args()
     args.exp_dir = Path(args.exp_dir)
 
     params = get_params()
     params.update(vars(args))
 
-    assert params.decoding_method in (
-        "greedy_search",
-        "beam_search",
-    )
     if not params.res_dir:
-        params.res_dir = params.exp_dir / params.decoding_method
+        params.res_dir = params.exp_dir / "see_blanks"
 
 
     if params.iter > 0:
@@ -640,20 +577,6 @@ def main():
         params.suffix += f"-chunk-{params.chunk_size}"
         params.suffix += f"-left-context-{params.left_context_frames}"
 
-    if "beam_search" in params.decoding_method:
-        params.suffix += f"-{params.decoding_method}-beam-size-{params.beam_size}"
-        if params.decoding_method in (
-            "modified_beam_search",
-            "modified_beam_search_LODR",
-        ):
-            if params.has_contexts:
-                params.suffix += f"-context-score-{params.context_score}"
-    else:
-        params.suffix += f"-context-{params.context_size}"
-        params.suffix += f"-max-sym-per-frame-{params.max_sym_per_frame}"
-
-    if params.use_averaged_model:
-        params.suffix += "-use-averaged-model"
 
     setup_logger(f"{params.res_dir}/log-decode-{params.suffix}")
     logging.info("Decoding started")
@@ -670,16 +593,6 @@ def main():
     params.blank_id = sp.piece_to_id("<blk>")
     params.unk_id = sp.piece_to_id("<unk>")
     params.vocab_size = sp.get_piece_size()
-
-    global beam_search, greedy_search
-    if params.beam_search_type == 4:
-        beam_search = beam_search4
-        greedy_search = greedy_search4
-    elif params.beam_search_type == 5:
-        beam_search = beam_search5
-        greedy_search = greedy_search5
-    else:
-        raise ValueError(f"Unrecognised --beam-search-type provided: {params.beam_search_type}")
 
     logging.info(params)
 
@@ -766,6 +679,7 @@ def main():
     model.to(device)
     model.eval()
 
+
     num_param = sum([p.numel() for p in model.parameters()])
     logging.info(f"Number of model parameters: {num_param}")
 
@@ -785,9 +699,10 @@ def main():
     dev_other_dl = librispeech.test_dataloaders(dev_other_cuts)
     
     test_sets = ["test-clean", "test-other", "dev-clean", "dev-other"]
-    test_dls = [test_clean_dl, test_other_dl, dev_clean_dl, dev_other_dl]
+    test_dl = [test_clean_dl, test_other_dl, dev_clean_dl, dev_other_dl]
 
-    for test_set, test_dl in zip(test_sets, test_dls):
+
+    for test_set, test_dl in zip(test_sets, test_dl):
         results_dict = decode_dataset(
             dl=test_dl,
             params=params,
@@ -795,23 +710,11 @@ def main():
             sp=sp,
         )
 
-        tot_err = save_results(
+        save_results(
             params=params,
             test_set_name=test_set,
             results_dict=results_dict,
         )
-
-        with (
-            params.res_dir
-            / (
-                f"{test_set}-{params.beam_size}"
-                f"_{params.avg}_{params.epoch}_{params.max_sym_per_frame}.cer"
-            )
-        ).open("w") as fout:
-            if len(tot_err) == 1:
-                fout.write(f"{tot_err[0][1]}")
-            else:
-                fout.write("\n".join(f"{k}\t{v}") for k, v in tot_err)
 
     logging.info("Done!")
 
