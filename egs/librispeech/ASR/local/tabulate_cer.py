@@ -23,7 +23,7 @@ def main():
     # res_dir = Path(args.res_dir)
     results = defaultdict(lambda:defaultdict(dict))
 
-    for res in args.res_dir.glob("*/*cer"):
+    for res in args.res_dir.glob("*/*.ci"):
         *evalset, param = res.stem.split("-")
         evalset = "-".join(evalset)
         results[param][res.suffix][evalset] = res.read_text()
@@ -31,7 +31,7 @@ def main():
     with args.output.open("w") as fout:
         for param, v in results.items():
             fout.write(param.replace("_", ","))
-            for suffix in [".cer"]:
+            for suffix in [".ci"]:
                 for evalset in ["test-clean", "test-other", "dev-clean", "dev-other"]:
                     try:
                         fout.write("," + v[suffix][evalset])

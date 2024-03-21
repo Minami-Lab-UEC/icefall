@@ -839,7 +839,8 @@ def main():
                 params.suffix += f"-context-score-{params.context_score}"
     else:
         params.suffix += f"-context-{params.context_size}"
-        params.suffix += f"-max-sym-per-frame-{params.max_sym_per_frame}"
+    
+    params.suffix += f"-max-sym-per-frame-{params.max_sym_per_frame}"
 
     if params.use_shallow_fusion:
         params.suffix += f"-{params.lm_type}-lm-scale-{params.lm_scale}"

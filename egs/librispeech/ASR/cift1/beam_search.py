@@ -106,20 +106,21 @@ class HypothesisList(object):
                 s = hyp.s
 
                 # ------------------------------------------------------------------------------------------------------
-                # This part is different from beam_search_5.py
+                # Forcibly choose blank
 
                 if new_token in self.move_t_syms:
-                    t += 1 
+                    t += 1
                     s = 0
+                elif s == (self.max_s_per_t-1):
+                    t += 1
+                    s = 0
+                    new_log_prob = next_lprobs[this_hyp_idx * self.V].squeeze(0) 
                 else:
                     new_ys = new_ys + [new_token]
-                    if s == self.max_s_per_t:
-                        t += 1
-                        s = 0
-                    else:
-                        # move in u direction
-                        s += 1
+                    s += 1
+
                 # -------------------------------------------------------------------------------------------------------
+
 
                 # get original probability
                 log_prob = new_log_prob 
@@ -323,10 +324,6 @@ def beam_search(
 ) -> List[List[int]]:
     assert encoder_out.ndim == 3, encoder_out.shape
     assert encoder_out.size(0) >= 1, encoder_out.size(0)
-
-    gaussian_diag_cov = (
-        [float(v) for v in gaussian_diag_cov.split(",")] if gaussian_diag_cov else None
-    )
 
     vocab_size = model.joiner.output_linear.out_features
     unk_id = getattr(model, "unk_id", -1)

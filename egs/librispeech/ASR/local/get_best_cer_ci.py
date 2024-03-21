@@ -19,23 +19,23 @@ def get_args():
 
 def main():
     args = get_args()
-    # res_dir : Path = args.res_dir
-    # res_dir.exists()
     assert args.res_file.exists(), f"{args.res_file} cannot be found."
     assert args.output.parent.is_dir(), f"Please create parent for {args.output}."
-    # res_dir = Path(args.res_dir)
+
     test = {}
     val = {}
+    val_cer = {}
     with args.res_file.open('r') as fin:
         for line in fin:
             line = line.strip().split(',')
             key = ','.join(line[:-4])
-            ers = [float(l) for l in line[-4:]]
-            test[key] = (ers[-4], ers[-3])
-            val[key] = (ers[-2], ers[-1])
+            ers = line[-4:] # [float(l) for l in line[-4:]]
+            test[key] = (ers[0], ers[1])
+            val[key] = (ers[2], ers[3])
+            val_cer[key] = float(ers[2].split("±")[0])+float(ers[3].split("±")[0])
     
-    # val = sorted(val.items(), key=lambda x: sum(x[1]))
-    sorted_keys = sorted(val.items(), key=lambda x: sum(x[1]))
+
+    sorted_keys = sorted(val_cer.items(), key=lambda x: x[1])
     
     with args.output.open('w') as fout:
         for i, (top_key, top_val) in enumerate(sorted_keys):

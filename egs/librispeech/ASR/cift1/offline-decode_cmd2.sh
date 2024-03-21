@@ -4,7 +4,6 @@ exp_dir=$6
 setup=$7
 epoch=$8
 maxsyms=$9
-beamsearchtype=${10}
 args=$(sed '/^##/,$d' $setup)
 
 for chunk in $1; do
@@ -18,7 +17,6 @@ for chunk in $1; do
                     --use-averaged-model 1 \
                     --max-duration 1500 \
                     --decoding-method beam_search \
-                    --beam-search-type $beamsearchtype \
                     --manifest-dir data/fbank \
                     --lang data/lang_bpe_500 \
                     --max-sym-per-frame $maxsym \

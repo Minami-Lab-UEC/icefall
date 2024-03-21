@@ -118,13 +118,9 @@ from typing import Dict, List, Tuple
 import torch
 import torch.nn as nn
 from asr_datamodule import LibriSpeechAsrDataModule
-from beam_search_4 import (
-    beam_search as beam_search4,
-    greedy_search as greedy_search4,
-)
-from beam_search_5 import (
-    beam_search as beam_search5,
-    greedy_search as greedy_search5,
+from beam_search import (
+    beam_search,
+    greedy_search,
 )
 from tokenizer import Tokenizer
 from train import get_params
@@ -144,12 +140,22 @@ from icefall.utils import (
     write_error_stats,
 )
 from targetlens import TargetLength
+import time
+from lhotse.utils import fix_random_seed
+
+
 LOG_EPS = math.log(1e-10)
 
 
 def get_parser():
     parser = argparse.ArgumentParser(
         formatter_class=argparse.ArgumentDefaultsHelpFormatter
+    )
+
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=42,
     )
 
     parser.add_argument(
@@ -193,7 +199,7 @@ def get_parser():
 
     parser.add_argument(
         "--exp-dir",
-        type=str,
+        type=Path,
         default="zipformer/exp",
         help="The experiment dir",
     )
@@ -387,13 +393,6 @@ def get_parser():
         default=0,
     )
 
-    parser.add_argument(
-        "--beam-search-type",
-        type=int,
-        choices=[4,5],
-        default=5,
-    )
-
     add_model_arguments(parser)
 
     return parser
@@ -464,7 +463,6 @@ def decode_one_batch(
     encoder_out2, encoder_out_lens2 = model.phi(encoder_out, encoder_out_lens, alphas, feature_mask)
     batch_size = encoder_out2.size(0)
 
-    global greedy_search, beam_search
     if params.decoding_method == "greedy_search":
         hyps = []
         for i in range(batch_size):
@@ -481,7 +479,6 @@ def decode_one_batch(
             encoder_out_lens=encoder_out_lens2,
             beam=params.beam_size,
             max_s_per_t=params.max_sym_per_frame,
-            # gaussian_diag_cov=params.gaussian_diag_cov,
         )
         hyps = [sp.text2word(h) for h in sp.decode(hyps)]
 
@@ -606,14 +603,15 @@ def save_results(
 
 @torch.no_grad()
 def main():
+    start_time = time.time()
     parser = get_parser()
     LibriSpeechAsrDataModule.add_arguments(parser)
     Tokenizer.add_arguments(parser)
     # Not used, but just to ensure that the experiment arguments are parsed.
     TargetLength.add_targetlength_arguments(parser)
     args = parser.parse_args()
-    args.exp_dir = Path(args.exp_dir)
 
+    fix_random_seed(args.seed)
     params = get_params()
     params.update(vars(args))
 
@@ -650,7 +648,8 @@ def main():
                 params.suffix += f"-context-score-{params.context_score}"
     else:
         params.suffix += f"-context-{params.context_size}"
-        params.suffix += f"-max-sym-per-frame-{params.max_sym_per_frame}"
+    
+    params.suffix += f"-max-sym-per-frame-{params.max_sym_per_frame}"
 
     if params.use_averaged_model:
         params.suffix += "-use-averaged-model"
@@ -670,16 +669,6 @@ def main():
     params.blank_id = sp.piece_to_id("<blk>")
     params.unk_id = sp.piece_to_id("<unk>")
     params.vocab_size = sp.get_piece_size()
-
-    global beam_search, greedy_search
-    if params.beam_search_type == 4:
-        beam_search = beam_search4
-        greedy_search = greedy_search4
-    elif params.beam_search_type == 5:
-        beam_search = beam_search5
-        greedy_search = greedy_search5
-    else:
-        raise ValueError(f"Unrecognised --beam-search-type provided: {params.beam_search_type}")
 
     logging.info(params)
 
@@ -795,25 +784,33 @@ def main():
             sp=sp,
         )
 
-        tot_err = save_results(
+        save_results(
             params=params,
             test_set_name=test_set,
             results_dict=results_dict,
         )
 
-        with (
-            params.res_dir
-            / (
-                f"{test_set}-{params.beam_size}"
-                f"_{params.avg}_{params.epoch}_{params.max_sym_per_frame}.cer"
-            )
-        ).open("w") as fout:
-            if len(tot_err) == 1:
-                fout.write(f"{tot_err[0][1]}")
-            else:
-                fout.write("\n".join(f"{k}\t{v}") for k, v in tot_err)
+        # with (
+        #     params.res_dir
+        #     / (
+        #         f"{test_set}-{params.beam_size}"
+        #         f"_{params.avg}_{params.epoch}_{params.max_sym_per_frame}.cer"
+        #     )
+        # ).open("w") as fout:
+        #     if len(tot_err) == 1:
+        #         fout.write(f"{tot_err[0][1]}")
+        #     else:
+        #         fout.write("\n".join(f"{k}\t{v}") for k, v in tot_err)
 
     logging.info("Done!")
+    end_time = time.time()
+    dur = end_time - start_time
+    with (params.res_dir / (
+        f"{params.beam_size}"
+        f"_{params.avg}_{params.epoch}_{params.max_sym_per_frame}.execution_time"
+    )).open('w') as fout:
+        fout.write(f"{dur:.10f}")
+    logging.info(f"Decoding took {dur:.10f}.")
 
 
 if __name__ == "__main__":

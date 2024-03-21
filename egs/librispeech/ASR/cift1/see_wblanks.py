@@ -113,23 +113,14 @@ import logging
 import math
 from collections import defaultdict
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Tuple
 
-import k2
 import torch
 import torch.nn as nn
 from asr_datamodule import LibriSpeechAsrDataModule
-from beam_search5 import (  # fast_beam_search_nbest,; fast_beam_search_nbest_LG,; fast_beam_search_nbest_oracle,; fast_beam_search_one_best,; greedy_search_batch,; modified_beam_search,
-    beam_search as beam_search_5,
-    greedy_search as greedy_search_5,
-)
-from beam_search4 import (
-    beam_search as beam_search_4,
-    greedy_search as greedy_search_4,
-)
 from tokenizer import Tokenizer
 from train import get_params
-from model import add_model_argument, get_model, CifTModel
+from model import add_model_arguments, get_model, CifTModel
 
 from icefall.checkpoint import (
     average_checkpoints,
@@ -137,17 +128,15 @@ from icefall.checkpoint import (
     find_checkpoints,
     load_checkpoint,
 )
-from icefall.lexicon import Lexicon
 from icefall.utils import (
     AttributeDict,
     setup_logger,
-    store_transcripts,
     str2bool,
-    write_error_stats,
+    add_sos,
 )
-import os
-from icefall import ContextGraph, LmScorer, NgramLm
-import sentencepiece as spm
+from icefall import LmScorer
+from targetlens import TargetLength
+import k2
 
 LOG_EPS = math.log(1e-10)
 
@@ -198,7 +187,7 @@ def get_parser():
 
     parser.add_argument(
         "--exp-dir",
-        type=str,
+        type=Path,
         default="zipformer/exp",
         help="The experiment dir",
     )
@@ -240,16 +229,56 @@ def get_parser():
     )
 
 
-    add_model_argument(parser)
+    add_model_arguments(parser)
 
     return parser
 
+def forced_alignment(
+    logits : torch.Tensor,
+    tokens : List[int],
+    blank_id = 0,
+) -> List:
+    logits = logits[0].cpu()
+    T, U, V = logits.shape    
+    
+    # 1. Build trellis
+    trellis = torch.zeros((T, U))
+    trellis[1:, 0] = logits[:-1, 0, 0].cumsum(dim=0)
+    trellis[0, 1:] = logits[0, range(U-1), tokens].cumsum(dim=0)
+    for t in range(1, T):
+        for u in range(1, U):
+            trellis[t, u] = torch.maximum(
+                trellis[t-1, u] + logits[t-1, u, blank_id],
+                trellis[t, u-1] + logits[t, u-1, tokens[u-1]],
+            )
+    
+    # 2. Backtrack
+    t = T-1
+    u = U-1
+    path = [(t, u, blank_id)]
+    for step in range(T+U, 2, -1):
+        if not t:
+            u -= 1
+            path.append((t, u, tokens[u]))
+        elif not u:
+            t -= 1
+            path.append((t, u, blank_id))
+        elif trellis[t-1, u] > trellis[t, u-1]:
+            t -= 1
+            path.append((t, u, blank_id))
+        else:
+            u -= 1
+            path.append((t, u, tokens[u]))
+    assert (t, u) == (0, 0), (t, u)
+    
+    return path[::-1]   
+    
+    
 
-
-def greedy_search(
+def best_path_search(
     model: CifTModel,
     encoder_out: torch.Tensor,
-    max_sym_per_frame: int,
+    tokens: List[int],
 ) -> List[int]:
     """Greedy search for a single utterance.
     Args:
@@ -271,71 +300,21 @@ def greedy_search(
     assert encoder_out.size(0) == 1, encoder_out.size(0)
 
     blank_id = model.decoder.blank_id
-    context_size = model.decoder.context_size
-    unk_id = getattr(model, "unk_id", blank_id)
 
     device = next(model.parameters()).device
 
-    decoder_input = torch.tensor(
-        [-1] * (context_size - 1) + [blank_id], device=device, dtype=torch.int64
-    ).reshape(1, context_size)
+    y = k2.RaggedTensor([tokens]).to(device)
+    sos_y = add_sos(y, sos_id=0)
+    sos_y_padded = sos_y.pad(mode="constant", padding_value=blank_id)
 
-    decoder_out = model.decoder(decoder_input, need_pad=False)
-    decoder_out = model.joiner.decoder_proj(decoder_out)
+    decoder_out = model.decoder(sos_y_padded)
 
-    encoder_out = model.joiner.encoder_proj(encoder_out)
+    full_logits = model.joiner(encoder_out.unsqueeze(2), decoder_out.unsqueeze(1))
 
-    T = encoder_out.size(1)
-    t = 0
-    hyp = [blank_id] * context_size
-    hyp_w_blanks = []
+    forced_alignment_path = forced_alignment(full_logits, tokens)
+    tokens_w_blank = [t for *_, t in forced_alignment_path]
 
-
-    # Maximum symbols per utterance.
-    max_sym_per_utt = 1000
-
-    # symbols per frame
-    sym_per_frame = 0
-
-    # symbols per utterance decoded so far
-    sym_per_utt = 0
-
-    while t < T and sym_per_utt < max_sym_per_utt:
-        if sym_per_frame >= max_sym_per_frame:
-            hyp_w_blanks.append(blank_id)
-            sym_per_frame = 0
-            t += 1
-            continue
-
-        # fmt: off
-        current_encoder_out = encoder_out[:, t:t+1, None, :] #.unsqueeze(2)
-        # fmt: on
-        logits = model.joiner(
-            current_encoder_out, decoder_out.unsqueeze(1), project_input=False
-        )
-        # logits is (1, 1, 1, vocab_size)
-
-        y = logits.argmax().item()
-        if y not in (blank_id, unk_id):
-            hyp.append(y)
-            decoder_input = torch.tensor([hyp[-context_size:]], device=device).reshape(
-                1, context_size
-            )
-
-            decoder_out = model.decoder(decoder_input, need_pad=False)
-            decoder_out = model.joiner.decoder_proj(decoder_out)
-
-            sym_per_utt += 1
-            sym_per_frame += 1
-
-        else:
-            # hyp.append(y)
-            sym_per_frame = 0
-            t += 1
-        hyp_w_blanks.append(y)
-    hyp = hyp[context_size:]  # remove blanks
-
-    return hyp, hyp_w_blanks
+    return tokens_w_blank
 
 
 
@@ -404,20 +383,18 @@ def decode_one_batch(
     encoder_out2, encoder_out_lens2 = model.phi(encoder_out, encoder_out_lens, alphas, feature_mask)
     batch_size = encoder_out2.size(0)
 
-    hyps = []
     hyps_w_blank = []
     for i in range(batch_size):
-        hyp, hyp_w_blank = greedy_search(
+        hyp_w_blank = best_path_search(
             model=model,
             encoder_out=encoder_out2[i, None, : encoder_out_lens2[i]],
-            max_sym_per_frame=params.max_sym_per_frame,
+            tokens=sp.encode(batch["supervisions"]["text"][i]),
         )
-        hyps.append(sp.text2word(sp.decode(hyp)))
         hyp_w_blank = sp.encode(sp.decode(hyp_w_blank), out_type=str)
         hyp_w_blank = ' '.join(hyp_w_blank).replace("<blk>", "∅")
         hyps_w_blank.append(hyp_w_blank)
 
-    return {"greedy_search": (hyps, hyps_w_blank)}
+    return {"forced_alignment_search": hyps_w_blank}
 
 
 
@@ -462,7 +439,6 @@ def decode_dataset(
 
     results = defaultdict(list)
     for batch_idx, batch in enumerate(dl):
-        texts = batch["supervisions"]["text"]
         cut_ids = [cut.id for cut in batch["supervisions"]["cut"]]
 
         hyps_dict = decode_one_batch(
@@ -472,16 +448,15 @@ def decode_dataset(
             batch=batch,
         )
 
-        for name, (hyps, hyps_w_blank) in hyps_dict.items():
+        for name, hyps_w_blank in hyps_dict.items():
             this_batch = []
-            assert len(hyps) == len(texts)
-            for cut_id, hyp_words, hyp_w_blank, ref_text in zip(cut_ids, hyps, hyps_w_blank, texts):
-                ref_words = sp.text2word(ref_text)
-                this_batch.append((cut_id, ref_words, hyp_words, hyp_w_blank))
+            assert len(hyps_w_blank) == len(cut_ids)
+            for cut_id, hyp_w_blank in zip(cut_ids, hyps_w_blank):
+                this_batch.append((cut_id, hyp_w_blank))
 
             results[name].extend(this_batch)
 
-        num_cuts += len(texts)
+        num_cuts += len(cut_ids)
 
         if batch_idx % log_interval == 0:
             batch_str = f"{batch_idx}/{num_batches}"
@@ -496,54 +471,16 @@ def save_results(
     test_set_name: str,
     results_dict: Dict[str, List[Tuple[str, List[str], List[str]]]],
 ):
-    test_set_wers = dict()
     for key, results in results_dict.items():
-        recog_path = (
-            params.res_dir / f"recogs-{test_set_name}-{key}-{params.suffix}.txt"
-        )
         wblank_path = (
             params.res_dir / f"wblank-{test_set_name}-{key}-{params.suffix}.txt"
         )
         results = sorted(results)
-        noblank_results = []
-        with open(wblank_path, "w", encoding="utf8") as f1, open(recog_path, "w") as f2:
-            for cut_id, ref, hyp, hyp_w_blank in results:
+        with open(wblank_path, "w", encoding="utf8") as f1:
+            for cut_id, hyp_w_blank in results:
                 print(f"{cut_id}:\thyp={hyp_w_blank}", file=f1)
-                print(f"{cut_id}:\tref={ref}", file=f2)
-                print(f"{cut_id}:\thyp={hyp}",file=f2)
-                noblank_results.append((cut_id, ref, hyp))
 
-        logging.info(f"The transcripts are stored in {recog_path} and {wblank_path}")
-
-        errs_filename = (
-            params.res_dir / f"errs-{test_set_name}-{key}-{params.suffix}.txt"
-        )
-        with open(errs_filename, "w") as f:
-            wer = write_error_stats(
-                f, f"{test_set_name}-{key}", noblank_results, enable_log=True
-            )
-            test_set_wers[key] = wer
-
-        logging.info("Wrote detailed error stats to {}".format(errs_filename))
-
-    test_set_wers = sorted(test_set_wers.items(), key=lambda x: x[1])
-    errs_info = (
-        params.res_dir / f"wer-summary-{test_set_name}-{key}-{params.suffix}.txt"
-    )
-    with open(errs_info, "w") as f:
-        print("settings\tWER", file=f)
-        for key, val in test_set_wers:
-            print("{}\t{}".format(key, val), file=f)
-
-    s = "\nFor {}, WER of different settings are:\n".format(test_set_name)
-    note = "\tbest for {}".format(test_set_name)
-    for key, val in test_set_wers:
-        s += "{}\t{}{}\n".format(key, val, note)
-        note = ""
-    logging.info(s)
-
-    return test_set_wers
-
+        logging.info(f"The forced alignment paths are stored in {wblank_path}")
 
 
 @torch.no_grad()
@@ -552,6 +489,7 @@ def main():
     LibriSpeechAsrDataModule.add_arguments(parser)
     LmScorer.add_arguments(parser)
     Tokenizer.add_arguments(parser)
+    TargetLength.add_targetlength_arguments(parser)
     args = parser.parse_args()
     args.exp_dir = Path(args.exp_dir)
 

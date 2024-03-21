@@ -437,3 +437,8 @@ if [ $stage -le 14 ] && [ $stop_stage -ge 14 ]; then
       --out-statistics $out_dir/statistics-test.txt
   done
 fi
+
+if [ $stage -le 15 ] && [ $stop_stage -ge 15 ]; then
+    log "Stage 15 (for CIF-RNNT): Create train-clean-nosp-shuf"
+    python local/create_clean_nosp_shuf.py --cutset-dir data/fbank
+fi

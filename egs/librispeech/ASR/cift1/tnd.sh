@@ -8,7 +8,7 @@ for file in cift1/configs/*.txt ; do
     args=$(sed '/^##/,$d' $file)
     exp_dir=exp1_"$setup"_1
 
-    echo "$args" | xargs -a - python cift1/train.py \
+    echo "$args" | xargs -a - python cift1/train_frame.py \
         --world-size 4 \
         --exp-dir cift1/$exp_dir \
         --num-epochs 30 \
@@ -17,7 +17,7 @@ for file in cift1/configs/*.txt ; do
         --max-duration 850 \
         --lang data/lang_bpe_500 \
         --manifest-dir data/fbank \
-        --musan-dir /mnt/host/corpus/musan/musan/fbank \
+        --musan-dir /mnt/host/corpus/musan/fbank \
         --causal 1 \
         --full-libri 2 \
         --telegram-cred misc.ini || { python notify_tg.py "$exp_dir : Something wrong during training." ; exit 1; }
@@ -26,31 +26,8 @@ for file in cift1/configs/*.txt ; do
 
     mv $file cift1/$exp_dir/
 
-    # ./cift1/decode_main.sh cift1/$exp_dir 40 5
+    ./cift1/decode_main.sh cift1/$exp_dir "7 8 9"
 
 done
 
-# set -eou pipefail
-
-# python -m pdb cift1/train.py \
-#     --world-size 1 \
-#     --exp-dir cift1/todelete \
-#     --num-epochs 30 \
-#     --start-epoch 1 \
-#     --use-fp16 1 \
-#     --max-duration 550 \
-#     --lang data/lang_bpe_500 \
-#     --manifest-dir data/fbank \
-#     --musan-dir /mnt/host/corpus/musan/musan/fbank \
-#     --causal 1 \
-#     --full-libri 2 \
-#     --context-size 4 \
-#     --phi-arch vanilla \
-#     --phi-type "att;8" \
-#     --phi-norm layernorm \
-#     --alpha-actv abs \
-#     --omega-type Mean \
-#     --prune-range 16 \
-#     --targetlen-from num_tokens \
-#     --ent2awe-slope 0.52342372362095213 \
-#     --ent2awe-intercept 0
+./zipformer/tnd.sh

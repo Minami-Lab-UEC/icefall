@@ -394,7 +394,7 @@ class LibriSpeechAsrDataModule:
         sampler = DynamicBucketingSampler(
             cuts,
             max_duration=self.args.max_duration,
-            shuffle=False,
+            shuffle=True,
         )
         logging.debug("About to create test dataloader")
         test_dl = DataLoader(
@@ -444,13 +444,13 @@ class LibriSpeechAsrDataModule:
         )
 
     @lru_cache()
-    def train_clean_shuf_cuts(self) -> CutSet:
+    def train_clean_shuf_nosp_cuts(self) -> CutSet:
         logging.info(
             "About to get the shuffled train-clean-100 and \
-            train-clean-360"
+            train-clean-360 without speed perturbation"
         )
         return load_manifest_lazy(
-            self.args.manifest_dir / "librispeech_cuts_train-clean-shuf.jsonl.gz"
+            self.args.manifest_dir / "librispeech_cuts_train-clean-nosp-shuf.jsonl.gz"
         )
 
     @lru_cache()
