@@ -29,5 +29,3 @@ for file in cift1/configs/*.txt ; do
     ./cift1/decode_main.sh cift1/$exp_dir "7 8 9"
 
 done
-
-./zipformer/tnd.sh
