@@ -260,20 +260,6 @@ class AttnPhi(Phi):
         x_denom = x_logsumexp.gather(dim=-1, index=firing_points) # (B, h, T1+1) -> (B, h, T)
         weights = torch.exp(x - x_denom)
         return weights        
-        
-    def _ragged_softmax(self, x: Tensor, firing_points: Tensor, T1: int):
-        # ragged softmax via logsumexp trick
-
-        B = x.size(0)
-        x_max = x.max()
-        x_normed = x - x_max
-        x_exp = torch.exp(x_normed)
-        x_sumexp : Tensor= torch.zeros((B, self.num_heads, T1+1), dtype=x.dtype, device=x.device) # (B, h, T1+1)
-        x_sumexp.scatter_add_(dim=-1, index=firing_points, src=x_exp)
-        x_logsumexp = torch.log(x_sumexp) + x_max # (B, h, T1+1)
-        x_denom = x_logsumexp.gather(dim=-1, index=firing_points) # (B, h, T1+1) -> (B, h, T)
-        weights = torch.exp(x - x_denom)
-        return weights
 
 
 class MiniQAttnPhi(Phi):
@@ -368,6 +354,7 @@ class MiniQAttnPhi(Phi):
         x_denom = x_logsumexp.gather(dim=-1, index=firing_points) # (B, h, T1+1) -> (B, h, T)
         weights = torch.exp(x - x_denom)
         return weights
+
 
 class OriCIFPhi(Phi):
     def __init__(
