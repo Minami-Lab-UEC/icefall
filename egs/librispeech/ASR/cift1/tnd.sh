@@ -8,7 +8,7 @@ for file in cift1/configs/*.txt ; do
     args=$(sed '/^##/,$d' $file)
     exp_dir=exp1_"$setup"_1
 
-    echo "$args" | xargs -a - python cift1/train_frame.py \
+    echo "$args" | xargs -a - python cift1/train.py \
         --world-size 4 \
         --exp-dir cift1/$exp_dir \
         --num-epochs 30 \
@@ -30,4 +30,3 @@ for file in cift1/configs/*.txt ; do
 
 done
 
-./zipformer/tnd.sh

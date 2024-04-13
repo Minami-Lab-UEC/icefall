@@ -24,7 +24,7 @@ class TargetLength:
     
     @staticmethod
     def add_targetlength_arguments(parser: argparse.ArgumentParser):
-        group = parser.add_argument_group(title="Lang related options")
+        group = parser.add_argument_group(title="Target Length related options")
         group.add_argument(
             "--targetlen-from",
             type=str,
@@ -89,7 +89,7 @@ class FromWordCount(TargetLength):
         pass
 
     def score(self, line : str, bos = False, eos = False) -> float:
-        tgtlen = line.count("▁") + 1
+        tgtlen = line.count("▁")
         # Negative to align with the entropy scores from ngrams which are negative.
         return -tgtlen
 
