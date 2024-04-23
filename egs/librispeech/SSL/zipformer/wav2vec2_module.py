@@ -23,7 +23,7 @@ from typing import List, Tuple
 
 import numpy as np
 import random
-from scaling import penalize_abs_values_gt
+from scaling import penalize_abs_values_gt, ScaleGrad
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -64,6 +64,7 @@ class ConvFeatureExtractionModel(nn.Module):
             if is_layer_norm:
                 return nn.Sequential(
                     make_conv(),
+                    ScaleGrad(0.5),
                     nn.Dropout(p=dropout),
                     nn.Sequential(
                         TransposeLast(),
@@ -75,12 +76,18 @@ class ConvFeatureExtractionModel(nn.Module):
             elif is_group_norm:
                 return nn.Sequential(
                     make_conv(),
+                    ScaleGrad(0.5),
                     nn.Dropout(p=dropout),
                     Fp32GroupNorm(dim, dim, affine=True),
                     nn.GELU(),
                 )
             else:
-                return nn.Sequential(make_conv(), nn.Dropout(p=dropout), nn.GELU())
+                return nn.Sequential(
+                    make_conv(),
+                    ScaleGrad(0.5),
+                    nn.Dropout(p=dropout),
+                    nn.GELU()
+                )
 
         in_d = 1
         self.conv_layers = nn.ModuleList()
