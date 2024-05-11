@@ -85,7 +85,7 @@ class LibriSpeechAsrDataModule:
         group.add_argument(
             "--full-libri",
             type=int,
-            choices=[0,1,2],
+            choices=[0,1,2,3],
             default=1,
             help="""Used only when --mini-libri is False.When enabled,
             use 960h LibriSpeech. Otherwise, use 100h subset.""",
@@ -451,6 +451,16 @@ class LibriSpeechAsrDataModule:
         )
         return load_manifest_lazy(
             self.args.manifest_dir / "librispeech_cuts_train-clean-nosp-shuf.jsonl.gz"
+        )
+
+    @lru_cache()
+    def train_all_shuf_nosp_cuts(self) -> CutSet:
+        logging.info(
+            "About to get the shuffled train-clean-100, \
+            train-clean-360 and train-other-500 no speed perturbation cuts"
+        )
+        return load_manifest_lazy(
+            self.args.manifest_dir / "librispeech_cuts_train-all-nosp-shuf.jsonl.gz"
         )
 
     @lru_cache()

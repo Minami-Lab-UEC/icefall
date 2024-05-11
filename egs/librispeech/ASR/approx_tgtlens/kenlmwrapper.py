@@ -40,3 +40,14 @@ class UnigramLM:
             logprob += self.logprobs[self.eos_symbol]
         
         return logprob
+
+    def full_scores(self, line : str, bos = True, eos = True):
+        words = line.split(" ")
+        
+        for word in words:
+            prob = self.logprobs.get(word, -99)
+            yield (prob, 1, prob == -99)
+        
+        if eos:
+            prob = self.logprobs.get(self.eos_symbol, -99)
+            yield (prob, 1, prob == -99)

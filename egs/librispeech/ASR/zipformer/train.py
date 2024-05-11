@@ -1178,6 +1178,8 @@ def run(rank, world_size, args):
         train_cuts = librispeech.train_all_shuf_cuts()
     elif params.full_libri == 2:
         train_cuts = librispeech.train_clean_shuf_nosp_cuts()
+    elif params.full_libri == 3:
+        train_cuts = librispeech.train_all_shuf_nosp_cuts()
     else:
         train_cuts = librispeech.train_clean_100_cuts()
 
@@ -1231,8 +1233,8 @@ def run(rank, world_size, args):
         train_cuts, sampler_state_dict=sampler_state_dict
     )
 
-    valid_cuts = librispeech.dev_clean_cuts()
-    valid_cuts += librispeech.dev_other_cuts()
+    # valid_cuts = librispeech.dev_clean_cuts()
+    valid_cuts = librispeech.dev_other_cuts()
     valid_dl = librispeech.valid_dataloaders(valid_cuts)
 
     if not params.print_diagnostics:

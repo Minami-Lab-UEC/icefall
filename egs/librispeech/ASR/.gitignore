@@ -2,3 +2,4 @@ log-*
 .DS_Store
 run*.sh
 misc.ini
+approx_tgtlens/data*
