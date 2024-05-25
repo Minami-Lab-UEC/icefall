@@ -1,4 +1,4 @@
-#  Copyright      2021  Piotr Żelasko
+# Copyright      2021  Piotr Żelasko
 # Copyright      2022  Xiaomi Corporation     (Author: Mingshuang Luo)
 #
 # See ../../../../LICENSE for clarification regarding multiple authors
@@ -84,8 +84,8 @@ class LibriSpeechAsrDataModule:
         )
         group.add_argument(
             "--full-libri",
-            type=str2bool,
-            default=True,
+            type=int,
+            default=1,
             help="""Used only when --mini-libri is False.When enabled,
             use 960h LibriSpeech. Otherwise, use 100h subset.""",
         )
@@ -108,6 +108,9 @@ class LibriSpeechAsrDataModule:
             default=200.0,
             help="Maximum pooled recordings duration (seconds) in a "
             "single batch. You can reduce it if it causes CUDA OOM.",
+        )
+        group.add_argument(
+            "--musan-dir", type=Path, default=None, help="Path to directory with musan cuts. "
         )
         group.add_argument(
             "--bucketing-sampler",
@@ -231,7 +234,7 @@ class LibriSpeechAsrDataModule:
         if self.args.enable_musan:
             logging.info("Enable MUSAN")
             logging.info("About to get Musan cuts")
-            cuts_musan = load_manifest(self.args.manifest_dir / "musan_cuts.jsonl.gz")
+            cuts_musan = load_manifest(self.args.musan_dir / "musan_cuts.jsonl.gz")
             transforms.append(
                 CutMix(cuts=cuts_musan, p=0.5, snr=(10, 20), preserve_id=True)
             )
@@ -392,7 +395,7 @@ class LibriSpeechAsrDataModule:
         sampler = DynamicBucketingSampler(
             cuts,
             max_duration=self.args.max_duration,
-            shuffle=False,
+            shuffle=True,
         )
         logging.debug("About to create test dataloader")
         test_dl = DataLoader(
@@ -440,6 +443,39 @@ class LibriSpeechAsrDataModule:
         return load_manifest_lazy(
             self.args.manifest_dir / "librispeech_cuts_train-all-shuf.jsonl.gz"
         )
+
+    @lru_cache()
+    def train_clean_shuf_nosp_cuts(self) -> CutSet:
+        logging.info(
+            "About to get the shuffled train-clean-100 and \
+            train-clean-360 without speed perturbation"
+        )
+        return load_manifest_lazy(
+            self.args.manifest_dir / "librispeech_cuts_train-clean-nosp-shuf.jsonl.gz"
+        )
+
+    @lru_cache()
+    def train_all_shuf_nosp_cuts(self) -> CutSet:
+        logging.info(
+            "About to get the shuffled train-clean-100, \
+            train-clean-360 and train-other-500 no speed perturbation cuts"
+        )
+        return load_manifest_lazy(
+            self.args.manifest_dir / "librispeech_cuts_train-all-nosp-shuf.jsonl.gz"
+        )
+
+    @lru_cache()
+    def train_cuts(self) -> CutSet:
+        full_libri = self.args.full_libri
+        
+        if full_libri == 1:
+            return self.train_all_shuf_cuts()
+        elif full_libri == 2:
+            return self.train_clean_shuf_nosp_cuts()
+        elif full_libri == 3:
+            return self.train_all_shuf_nosp_cuts()
+        else:
+            return self.train_clean_100_cuts()
 
     @lru_cache()
     def dev_clean_2_cuts(self) -> CutSet:
