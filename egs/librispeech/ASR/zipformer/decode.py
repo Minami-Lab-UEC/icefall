@@ -139,6 +139,7 @@ from icefall.utils import (
     str2bool,
     write_error_stats,
 )
+import time
 
 LOG_EPS = math.log(1e-10)
 
@@ -775,6 +776,7 @@ def save_results(
 
 @torch.no_grad()
 def main():
+    start_time = time.time()
     parser = get_parser()
     LibriSpeechAsrDataModule.add_arguments(parser)
     LmScorer.add_arguments(parser)
@@ -1067,26 +1069,21 @@ def main():
             ngram_lm_scale=ngram_lm_scale,
         )
 
-        tot_err = save_results(
+        save_results(
             params=params,
             test_set_name=test_set,
             results_dict=results_dict,
         )
 
-        with (
-            params.res_dir
-            / (
-                f"{test_set}-{params.beam_size}"
-                f"_{params.avg}_{params.epoch}_1.cer"
-            )
-        ).open("w") as fout:
-            if len(tot_err) == 1:
-                fout.write(f"{tot_err[0][1]}")
-            else:
-                fout.write("\n".join(f"{k}\t{v}") for k, v in tot_err)
-
     logging.info("Done!")
-
+    end_time = time.time()
+    dur = end_time - start_time
+    with (params.res_dir / (
+        f"{params.beam_size}"
+        f"_{params.avg}_{params.epoch}_{params.max_sym_per_frame}.execution_time"
+    )).open('w') as fout:
+        fout.write(f"{dur:.10f}")
+    logging.info(f"Decoding took {dur:.10f}.")
 
 if __name__ == "__main__":
     main()

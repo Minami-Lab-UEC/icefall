@@ -8,8 +8,9 @@ import argparse
 from pathlib import Path
 import re
 
+# recogs-dev-clean-beam_size_4-epoch-40-avg-6-chunk-16-left-context-64-beam_search-beam-size-4-max-sym-per-frame-7-use-averaged-model.txt
 matcher = re.compile(
-    r"recogs-([a-zA-Z0-9_-]+)-beam_size.*epoch-(\d*)-avg-(\d*)-.*-beam-size-(\d*)-max-sym-per-frame-(\d*).*"
+    r"recogs-([a-zA-Z0-9_-]+)-beam_size.*epoch-(\d*)-avg-(\d*)-chunk-(\d*)-left-context-(\d*)-.*-beam-size-(\d*)-max-sym-per-frame-(\d*).*"
 )
 
 def get_args():
@@ -20,6 +21,12 @@ def get_args():
     parser.add_argument(
         "--res-dir",
         type=Path,
+    )
+
+    parser.add_argument(
+        "--subparts",
+        nargs="+",
+        type=str,
     )
 
     return parser.parse_args()
@@ -64,13 +71,15 @@ def read_recogs(file : Path):
     return np.array(samples), np.array(num_words)
 
 def get_ci_filename(recogs_filename : str) -> str:
-    matches = matcher.findall(recogs_filename)[0]
-    return f"{matches[0]}-{matches[3]}_{matches[2]}_{matches[1]}_{matches[4]}.ci"
+    matches = matcher.findall(recogs_filename)[0] 
+    # r"recogs-([a-zA-Z0-9_-]+)-beam_size.*epoch-(\d*)-avg-(\d*)-chunk-(\d*)-left-context-(\d*)-beam-size-(\d*)-max-sym-per-frame-(\d*).*"
+    subpart, epoch, avg, chunk, leftcontext, beam, maxsym = matches
+    return f"{subpart}-{avg}_{epoch}_{beam}_{chunk}_{leftcontext}_{maxsym}.ci"
 
 def main():
     args = get_args()
     res_dir : Path = args.res_dir
-    subparts = ["test-clean", "test-other", "dev-clean", "dev-other"]
+    subparts = args.subparts #["test-clean", "test-other", "dev-clean", "dev-other"]
 
     for subpart in subparts:
         for recogs in res_dir.glob(f"*/recogs-{subpart}-*"):
