@@ -14,11 +14,39 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import argparse
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from scaling import Balancer
 
+
+def add_decoder_arguments(parser : argparse.ArgumentParser):
+    group = parser.add_argument_group(title="Transducer Decoder related options")
+    
+    group.add_argument(
+        "--decoder-dim",
+        type=int,
+        default=512,
+        help="Embedding dimension in the decoder model.",
+    )
+
+    group.add_argument(
+        "--context-size",
+        type=int,
+        default=2,
+        help="The context size in the decoder. 1 means bigram; 2 means tri-gram",
+    )
+    
+
+def get_decoder_model(params) -> nn.Module:
+    decoder = Decoder(
+        vocab_size=params.vocab_size, # defined in train.py / decode.py
+        decoder_dim=params.decoder_dim,
+        blank_id=params.blank_id, # defined in train.py / decode.py
+        context_size=params.context_size,
+    )
+    return decoder
 
 class Decoder(nn.Module):
     """This class modifies the stateless decoder from the following paper:

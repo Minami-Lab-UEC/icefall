@@ -50,7 +50,7 @@ def compute_wer(
             subs += 1
     ref_len = len(ref)
     tot_errs = subs + ins + dels
-    tot_err_rate = 100.0 * tot_errs / ref_len
+    tot_err_rate = 100.0 * tot_errs / max(ref_len,1)
 
     return tot_err_rate
 
