@@ -117,6 +117,11 @@ class CSJAsrDataModule:
             help="Mode of transcript in supervision to use.",
         )
         group.add_argument(
+            "--full-csj",
+            type=int,
+            default=1,
+        )
+        group.add_argument(
             "--manifest-dir",
             type=Path,
             default=Path("data/manifests"),
@@ -336,8 +341,6 @@ class CSJAsrDataModule:
                 max_duration=self.args.max_duration,
                 shuffle=self.args.shuffle,
                 num_buckets=self.args.num_buckets,
-                buffer_size=self.args.num_buckets * 2000,
-                shuffle_buffer_size=self.args.num_buckets * 5000,
                 drop_last=self.args.drop_last,
             )
         else:
@@ -437,6 +440,31 @@ class CSJAsrDataModule:
     def train_cuts(self) -> CutSet:
         logging.info("About to get train cuts")
         return load_manifest_lazy(self.args.manifest_dir / "csj_cuts_train.jsonl.gz")
+
+    @lru_cache()
+    def train_nosp_cuts(self) -> CutSet:
+        logging.info("About to get train nosp cuts")
+        return load_manifest_lazy(self.args.manifest_dir / "csj_cuts_train_nosp.jsonl.gz")
+
+    @lru_cache()
+    def train_nosp_nosubset_cuts(self) -> CutSet:
+        logging.info("About to get train nosp nosubset cuts")
+        return load_manifest_lazy(self.args.manifest_dir / "csj_cuts_train_nosp_nosubset.jsonl.gz")
+
+    @lru_cache()
+    def train_nosp_nosubset_nosil_cuts(self) -> CutSet:
+        logging.info("About to get train nosp nosubset nosil cuts")
+        return load_manifest_lazy(self.args.manifest_dir / "csj_cuts_train_nosp_nosubset_nosil.jsonl.gz")
+
+    @lru_cache()
+    def train_cuts_implicit(self) -> CutSet:
+        full_csj = self.args.full_csj
+        if full_csj == 1:
+            return self.train_cuts()
+        elif full_csj == 2:
+            return self.train_nosp_cuts()
+        else:
+            raise NotImplementedError(f"{full_csj=}")
 
     @lru_cache()
     def valid_cuts(self) -> CutSet:

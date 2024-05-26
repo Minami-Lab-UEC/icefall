@@ -80,7 +80,8 @@ def main():
         for cut in cutset:
             for name, parser in parsers:
                 cut.supervisions[0].custom[name] = parser.parse(
-                    cut.supervisions[0].custom["raw"]
+                    cut.supervisions[0].custom["raw"],
+                    sep=" "
                 )
             cut.supervisions[0].text = ""
             results.append(cut)

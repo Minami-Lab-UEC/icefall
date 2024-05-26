@@ -1,0 +1,1 @@
+../../../../egs/librispeech/ASR/zipformer/test_subsampling.py
