@@ -465,7 +465,7 @@ class LibriSpeechAsrDataModule:
         )
 
     @lru_cache()
-    def train_cuts(self) -> CutSet:
+    def train_cuts_implicit(self) -> CutSet:
         full_libri = self.args.full_libri
         
         if full_libri == 1:

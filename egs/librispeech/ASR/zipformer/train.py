@@ -1175,7 +1175,7 @@ def run(rank, world_size, args):
         register_inf_check_hooks(model)
 
     librispeech = LibriSpeechAsrDataModule(args)
-    train_cuts = librispeech.train_cuts()
+    train_cuts = librispeech.train_cuts_implicit()
 
     def remove_short_and_long_utt(c: Cut):
         # Keep only utterances with duration between 1 second and 20 seconds
