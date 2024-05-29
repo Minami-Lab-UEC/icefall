@@ -14,10 +14,32 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import argparse
 import torch
 import torch.nn as nn
 from scaling import ScaledLinear
 
+def add_joiner_arguments(parser: argparse.ArgumentParser):
+    group = parser.add_argument_group(title="Joiner related options")
+
+    group.add_argument(
+        "--joiner-dim",
+        type=int,
+        default=512,
+        help="""Dimension used in the joiner model.
+        Outputs from the encoder and decoder model are projected
+        to this dimension before adding.
+        """,
+    )
+
+def get_joiner_model(params) -> "Joiner":
+    joiner = Joiner(
+        encoder_dim=params.encoder_out_dim,
+        decoder_dim=params.decoder_dim,
+        joiner_dim=params.joiner_dim,
+        vocab_size=params.vocab_size, # defined in train.py / decode.py
+    )
+    return joiner
 
 class Joiner(nn.Module):
     def __init__(

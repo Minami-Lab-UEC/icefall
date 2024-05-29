@@ -16,6 +16,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import argparse
 import warnings
 from typing import Tuple
 
@@ -35,6 +36,31 @@ from scaling import (
 )
 from torch import Tensor, nn
 
+
+def add_encoder_embed_arguments(parser : argparse.ArgumentParser):
+    group = parser.add_argument_group("Acoustic embedder related options")
+    
+    group.add_argument(
+        "--feature-dim",
+        type=int,
+        default=80,
+    )
+
+def get_encoder_embed_model(params) -> "ConvNeXt":
+    # encoder_embed converts the input of shape (N, T, num_features)
+    # to the shape (N, (T - 7) // 2, encoder_dims).
+    # That is, it does two things simultaneously:
+    #   (1) subsampling: T -> (T - 7) // 2
+    #   (2) embedding: num_features -> encoder_dims
+    # In the normal configuration, we will downsample once more at the end
+    # by a factor of 2, and most of the encoder stacks will run at a lower
+    # sampling rate.
+    encoder_embed = Conv2dSubsampling(
+        in_channels=params.feature_dim,
+        out_channels=params.encoder_in_dim,
+        dropout=ScheduledFloat((0.0, 0.3), (20000.0, 0.1)),
+    )
+    return encoder_embed
 
 class ConvNeXt(nn.Module):
     """
